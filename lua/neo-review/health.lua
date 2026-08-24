@@ -55,6 +55,12 @@ function M.check()
   else
     health.info("no session running (:NeoReviewAgentStart)")
   end
+  local pname, _, raw_profile = agent.profile()
+  if raw_profile and not pname then
+    health.warn("persisted profile '" .. raw_profile .. "' is not defined in config (agent.profiles) — falling back to config defaults")
+  end
+  health.info(("profile: %s · model: %s · mode: %s"):format(pname or "none", agent.model() or "CLI default", agent.mode()))
+  health.info('statusline component: require("neo-review").statusline() — redraw on User NeoReviewAgentStateChanged')
   if require("neo-review.agent").last_stderr then
     health.warn("last stderr: " .. vim.trim(require("neo-review.agent").last_stderr))
   end

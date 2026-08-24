@@ -482,6 +482,33 @@ function M.mark_file_reviewed(rel)
   end
 end
 
+---Mark EVERY hunk in the changeset reviewed (opposite of clear_reviewed).
+---Content-hashed like the rest: later edits return those hunks to
+---outstanding on their own.
+function M.review_all()
+  if not session.enabled then
+    vim.notify("neo-review: review mode is off (:NeoReviewToggle)", vim.log.levels.INFO)
+    return
+  end
+  local hashes, outstanding = {}, 0
+  for _, rel in ipairs(session.files) do
+    local info = M.file_review_info(rel)
+    outstanding = outstanding + (info.total - info.reviewed)
+    vim.list_extend(hashes, info.hashes)
+  end
+  if outstanding == 0 then
+    vim.notify("neo-review: nothing outstanding — everything is already reviewed")
+    return
+  end
+  if vim.fn.confirm(string.format("Mark ALL %d outstanding hunk%s reviewed?", outstanding, outstanding == 1 and "" or "s"), "&Yes\n&No", 2) ~= 1 then
+    return
+  end
+  state.set_many(session.root, session.reviewed, baseline.key(), hashes, true)
+  after_reviewed_change(nil)
+  update_winbar()
+  vim.notify(string.format("neo-review: all %d file%s marked reviewed", #session.files, #session.files == 1 and "" or "s"))
+end
+
 ---Reset every reviewed checkmark for the current baseline.
 function M.clear_reviewed()
   if not session.enabled then
@@ -590,6 +617,43 @@ function M.file_hunks(relpath)
     lines = {}
   end
   return diff.hunks(baseline.file_text(session.root, relpath), lines), lines
+end
+
+---Statusline component for lualine/heirline/'statusline': "" while the
+---agent is stopped, else e.g. "agent:working ⏸1 [review:auto⛨]". The plugin
+---fires User NeoReviewAgentStateChanged (data: state, session_id, queued,
+---pending, mode, profile, sandboxed) on every change — native-statusline
+---users can redrawstatus on it; lualine polls on its own.
+function M.statusline()
+  return require("neo-review.agent").status_text()
+end
+
+---Compact color-coded icon for a native 'statusline' ("%#Hl#⏸1%*"-style,
+---"" when the agent is stopped): ⏸N red = pending approvals, ● orange =
+---working, ● green = idle, ○ dim = starting.
+function M.statusline_icon()
+  local icon, hl = require("neo-review.agent").status_icon()
+  if not icon then
+    return ""
+  end
+  return "%#" .. hl .. "#" .. icon .. "%*"
+end
+
+---Ready-made lualine component for the same icon (drop into any section):
+---  table.insert(opts.sections.lualine_x, 1, require("neo-review").lualine())
+function M.lualine()
+  return {
+    function()
+      return (require("neo-review.agent").status_icon()) or ""
+    end,
+    cond = function()
+      return require("neo-review.agent").status().state ~= "stopped"
+    end,
+    color = function()
+      local _, hl = require("neo-review.agent").status_icon()
+      return hl
+    end,
+  }
 end
 
 function M.setup(opts)

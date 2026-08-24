@@ -26,14 +26,88 @@ via a curated read-only `agent.auto_allow_tools` baseline and a
 claude-style permission mode: `:NeoReviewAgentMode` (picker showing current)
 or `:NeoReviewAgentMode acceptEdits|plan|default|bypassPermissions`,
 persisted per repo; a running session restarts in place via `--resume`.
-`:NeoReviewAgentStatus` shows state/mode/session/queue/pending.
+`:NeoReviewAgentStatus` shows state/profile/model/mode/session/queue/pending.
 `:NeoReviewAgentStart [--resume]`, `:NeoReviewAgentStop`,
 `:NeoReviewAgentInterrupt`, and `:NeoReviewAgentFork` (opens the real TUI on a
-`--fork-session` of the wrapped session in a terminal split — `docker exec`
-into the container when sandboxed). Agent state shows in the review winbar
-(`[auto⛨]` = auto mode, sandboxed). The wire protocol is
+`--fork-session` of the wrapped session in a terminal split — `sbx exec -it`
+into the sandbox when sandboxed; whether the last session was sandboxed is
+persisted per repo, so forking works across Neovim restarts). Agent state
+shows in the review winbar (`[review:auto⛨]` = review profile, auto mode,
+sandboxed). The wire protocol is
 unofficial — verified against claude 2.1.234; protocol notes live in
 `lua/neo-review/agent/claude.lua`, and `:checkhealth neo-review` reports on it.
+
+`:NeoReviewAgentLog` toggles a live, read-only split tailing everything the
+session does — turns sent, assistant text, tool calls with a one-line input
+summary (`→ Bash  $ npm test`), tool results, permission requests/answers,
+per-turn cost, and stderr — the place to look when the agent seems to hang.
+Windows parked at the bottom follow new output; scroll up and they stay put.
+The log is a scratch buffer (`review://agent-log`, capped at 2000 lines), so
+it keeps collecting in the background whether or not it's visible.
+
+### Profiles (model + mode presets)
+
+`agent.profiles` names presets bundling a model, a permission mode, and
+optionally a sandbox override; switch with `:NeoReviewAgentProfile` (picker
+showing current) or `:NeoReviewAgentProfile deep|none`, persisted per repo.
+`:NeoReviewAgentModel opus|haiku|<full id>|default` sets an ad-hoc model
+override the same way. Defaults:
+
+```lua
+agent = {
+  profiles = {
+    review = { model = "sonnet", permission_mode = "auto" },
+    deep = { model = "opus", permission_mode = "plan" },
+    -- yours: yolo = { model = "opus", permission_mode = "bypassPermissions", sandbox = true },
+  },
+},
+```
+
+Precedence, last explicit action wins: an explicit
+`:NeoReviewAgentMode`/`:NeoReviewAgentModel`/`:NeoReviewAgentSandbox` choice
+beats the active profile; the profile beats `agent.model` /
+`agent.permission_mode` from `setup()`; selecting a profile clears earlier
+ad-hoc overrides. A running session restarts in place onto the same
+conversation via `--resume` — except when the change flips the sandbox
+on/off, which starts a fresh session (transcripts don't cross the sandbox
+boundary).
+
+### Statusline
+
+The review winbar only renders on review-attached buffers; for an always-on
+indicator use the statusline component — returns `""` while the agent is
+stopped, else e.g. `agent:working ⏸1 [review:auto⛨]`:
+
+```lua
+-- lualine
+lualine_x = {
+  { function() return require("neo-review").statusline() end },
+},
+```
+
+If the full string is too noisy, there's a compact color-coded icon:
+`⏸N` red = pending approvals, `●` orange = working, `●` green = idle,
+`○` dim = starting, hidden when stopped (colors via the `NeoReviewAgent*`
+highlight groups, linked to the diagnostic palette by default):
+
+```lua
+-- lualine: ready-made component, e.g. bottom-right
+table.insert(opts.sections.lualine_z, require("neo-review").lualine())
+-- native 'statusline': returns "%#Hl#icon%*"
+--   require("neo-review").statusline_icon()
+```
+
+Every observable change (state, permission inbox, queue, stop) fires
+`User NeoReviewAgentStateChanged` with
+`data = { state, session_id, queued, pending, mode, profile, sandboxed }` —
+native-'statusline' users can redraw on it:
+
+```lua
+vim.api.nvim_create_autocmd("User", {
+  pattern = "NeoReviewAgentStateChanged",
+  callback = function() vim.cmd("redrawstatus") end,
+})
+```
 
 ### Sandbox (Docker Sandboxes / sbx microVMs)
 
@@ -69,7 +143,7 @@ is the boundary; the classifier still routes flagged actions to the inbox);
 | `:NeoReviewQuickfix` | Outstanding hunks → quickfix (reviewed hidden, counted in the title) |
 | `:NeoReviewMarkReviewed` | Toggle reviewed-state for the hunk under the cursor (persisted, per-baseline, content-addressed so it survives edits elsewhere) |
 | `:NeoReviewMarkFileReviewed [file]` | Toggle a whole file reviewed (all hunks; auto-advances to the next unreviewed file) |
-| `:NeoReviewUnreviewAll` | Reset reviewed-state for the current baseline (confirmed) |
+| `:NeoReviewReviewAll` / `:NeoReviewUnreviewAll` | Mark every hunk in the changeset reviewed / reset all reviewed-state (both confirmed) |
 | `:NeoReviewComment [kind]` | Open the comment thread at the cursor, or start a new one (`question`/`issue`/`suggestion`/…) |
 | `:NeoReviewThreads` | Picker of all comment threads (open/resolved/stale) |
 | `:NeoReviewResolve` | Toggle resolved for the thread here (thread buffer or code line) |
@@ -178,7 +252,8 @@ if a snacks update breaks it the plugin fails closed with a warning — run
 
 Requires Neovim 0.10+ (0.12 recommended) and git. Optional: snacks.nvim
 (richer pickers/explorer integration), the `claude` CLI (agent features),
-docker (agent sandbox — graceful fallback without it).
+sbx / Docker Sandboxes (agent sandbox — required unless you explicitly opt
+out per repo with `:NeoReviewAgentSandbox off`).
 
 ## Development (contributors)
 
@@ -196,8 +271,10 @@ minimal sandbox instead, symlink `dev/config/init.lua` to
 
 ## Repo state on disk
 
-`.review/` in a reviewed project holds plugin state. `local/` (reviewed-hunks,
-per-user) is always gitignored via a self-written `.review/.gitignore`;
+`.review/` in a reviewed project holds plugin state. `local/` (reviewed-hunks
+in `state.json`; per-repo agent choices in `agent.json`: `last_session_id`,
+`permission_mode`, `sandbox`, `sandboxed`, `profile`, `model` — all per-user)
+is always gitignored via a self-written `.review/.gitignore`;
 `threads/` uses an append-only, conflict-free-by-construction format so
 projects may choose to commit it.
 

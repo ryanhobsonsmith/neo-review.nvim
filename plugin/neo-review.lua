@@ -50,6 +50,10 @@ vim.api.nvim_create_user_command("NeoReviewUnreviewAll", function()
   review().clear_reviewed()
 end, { desc = "Reset all reviewed-state for the current baseline (asks for confirmation)" })
 
+vim.api.nvim_create_user_command("NeoReviewReviewAll", function()
+  review().review_all()
+end, { desc = "Mark every hunk in the changeset reviewed (asks for confirmation)" })
+
 vim.api.nvim_create_user_command("NeoReviewQuickfix", function()
   review()
   require("neo-review.nav").qflist()
@@ -143,6 +147,37 @@ end, {
   desc = "Show/set the agent permission mode (claude-style; persisted per repo)",
 })
 
+vim.api.nvim_create_user_command("NeoReviewAgentProfile", function(cmd)
+  review()
+  local agent = require("neo-review.agent")
+  if cmd.args ~= "" then
+    agent.set_profile(cmd.args)
+  else
+    agent.pick_profile()
+  end
+end, {
+  nargs = "?",
+  complete = function()
+    -- config.options defaults to a copy of the defaults pre-setup()
+    local names = vim.tbl_keys(require("neo-review.config").options.agent.profiles or {})
+    table.sort(names)
+    names[#names + 1] = "none"
+    return names
+  end,
+  desc = "Show/set the agent profile (model + permission mode preset; persisted per repo)",
+})
+
+vim.api.nvim_create_user_command("NeoReviewAgentModel", function(cmd)
+  review()
+  require("neo-review.agent").set_model(cmd.args ~= "" and cmd.args or nil)
+end, {
+  nargs = "?",
+  complete = function()
+    return { "sonnet", "opus", "haiku", "default" }
+  end,
+  desc = "Set the agent model for this repo (no arg / 'default' clears the override)",
+})
+
 vim.api.nvim_create_user_command("NeoReviewAgentPermission", function()
   require("neo-review.agent").review_permission()
 end, { desc = "Review the pending agent permission request" })
@@ -150,6 +185,10 @@ end, { desc = "Review the pending agent permission request" })
 vim.api.nvim_create_user_command("NeoReviewAgentStatus", function()
   require("neo-review.agent").show_status()
 end, { desc = "Show wrapped agent session status" })
+
+vim.api.nvim_create_user_command("NeoReviewAgentLog", function()
+  require("neo-review.agent.log").toggle()
+end, { desc = "Toggle a live read-only view of the agent's activity (turns, tool calls, permissions, stderr)" })
 
 vim.api.nvim_create_user_command("NeoReviewSkillInstall", function()
   require("neo-review.skill").install()

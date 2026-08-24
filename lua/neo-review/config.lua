@@ -50,6 +50,15 @@ M.defaults = {
     -- ("default" | "acceptEdits" | "plan" | "bypassPermissions" — the last
     -- only makes sense inside a sandbox).
     permission_mode = "default",
+    -- Named presets bundling model + permission mode (+ optional sandbox
+    -- override). Select with :NeoReviewAgentProfile (persisted per repo).
+    -- Precedence: explicit :NeoReviewAgentMode/:NeoReviewAgentModel/
+    -- :NeoReviewAgentSandbox choices beat the profile; the profile beats
+    -- agent.model/agent.permission_mode below.
+    profiles = {
+      review = { model = "sonnet", permission_mode = "auto" },
+      deep = { model = "opus", permission_mode = "plan" },
+    },
     -- Tools approved without entering the permission inbox. Curated safe
     -- baseline: read-only inspection + the agent's own todo bookkeeping.
     -- File WRITES are governed by permission_mode (acceptEdits), not this.

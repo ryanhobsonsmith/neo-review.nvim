@@ -28,11 +28,15 @@ function M.sandbox_name(root)
 end
 
 ---Is the sandbox active for this repo? Per-repo override in agent.json
----wins; otherwise the config default.
+---wins, then the active profile's sandbox field, then the config default.
 ---@param repo_state table the loaded .review/local/agent.json
-function M.enabled(repo_state)
+---@param profile table? the active agent profile, if any
+function M.enabled(repo_state, profile)
   if repo_state.sandbox ~= nil then
     return repo_state.sandbox
+  end
+  if profile and profile.sandbox ~= nil then
+    return profile.sandbox
   end
   return cfg().enabled
 end
