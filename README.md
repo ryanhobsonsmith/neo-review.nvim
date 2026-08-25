@@ -233,7 +233,11 @@ reviewing), fully-reviewed files **fade** (ignored-style `!!` status), and
 the row of the file you're editing gets a clear highlight
 (`NeoReviewExplorerCursor`, default `Visual`) instead of the near-invisible
 unfocused cursorline (opt out of all of it:
-`integrations = { snacks_explorer = false }`). This patches snacks internals;
+`integrations = { snacks_explorer = false }`). While review mode is on,
+`<leader>rv` inside the explorer list toggles reviewed for the file **or
+whole folder** under the cursor — marks everything outstanding beneath it,
+or unmarks it all when it's already fully reviewed
+(`keymaps = { explorer_review = … }` to rebind). This patches snacks internals;
 if a snacks update breaks it the plugin fails closed with a warning — run
 `:checkhealth neo-review` to see exactly which seam moved, and see the header of
 `lua/neo-review/integrations/snacks_explorer.lua` for the design.

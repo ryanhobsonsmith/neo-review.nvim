@@ -995,6 +995,57 @@ test("review-progress: file marking, !! statuses, content invalidation, skip-nav
   vim.fn.delete(repo, "rf")
 end)
 
+---------------------------------------------------------------- tree-level reviewed toggle
+
+test("mark_tree_reviewed: folder toggle marks/unmarks everything under it", function()
+  local repo = vim.fn.tempname()
+  vim.fn.mkdir(repo .. "/sub", "p")
+  local function sht(cmd)
+    assert(vim.system(cmd, { cwd = repo, text = true }):wait().code == 0)
+  end
+  sht({ "git", "init", "-q", "-b", "main" })
+  sht({ "git", "config", "user.email", "t@t" })
+  sht({ "git", "config", "user.name", "t" })
+  vim.fn.writefile({ "a" }, repo .. "/top.txt")
+  vim.fn.writefile({ "b" }, repo .. "/sub/one.txt")
+  vim.fn.writefile({ "c" }, repo .. "/sub/two.txt")
+  sht({ "git", "add", "." })
+  sht({ "git", "commit", "-q", "-m", "init" })
+  vim.fn.writefile({ "A" }, repo .. "/top.txt")
+  vim.fn.writefile({ "B" }, repo .. "/sub/one.txt")
+  vim.fn.writefile({ "C" }, repo .. "/sub/two.txt")
+
+  require("neo-review.config").setup({ keymaps = false, agent = { sandbox = { enabled = false } } })
+  vim.cmd.cd(repo)
+  vim.cmd.edit(repo .. "/top.txt")
+  local review = require("neo-review")
+  review.enable()
+
+  -- relative folder: only sub/* flips to reviewed
+  review.mark_tree_reviewed("sub")
+  eq(1, review.file_review_info("sub/one.txt").reviewed)
+  eq(1, review.file_review_info("sub/two.txt").reviewed)
+  eq(0, review.file_review_info("top.txt").reviewed)
+
+  -- absolute path to the same folder: everything under it reviewed -> unmark
+  review.mark_tree_reviewed(repo .. "/sub")
+  eq(0, review.file_review_info("sub/one.txt").reviewed)
+  eq(0, review.file_review_info("sub/two.txt").reviewed)
+
+  -- no changed files under a path -> no-op
+  review.mark_tree_reviewed("nosuch")
+  eq(0, (review.progress()))
+
+  -- "" (or the repo root) = the whole changeset
+  review.mark_tree_reviewed("")
+  eq(3, (review.progress()))
+
+  review.disable()
+  vim.cmd.cd(root)
+  require("neo-review.config").setup({})
+  vim.fn.delete(repo, "rf")
+end)
+
 ----------------------------------------------------------------
 
 if failed > 0 then

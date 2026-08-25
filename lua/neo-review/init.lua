@@ -352,9 +352,10 @@ function M.enable()
       if session.bufs[ev.buf] then
         claim_buffer_keymaps(ev.buf)
       end
-      -- Keep the explorer's current-row highlight applied (explorer windows
-      -- can be (re)opened at any time; idempotent + cheap).
+      -- Keep the explorer's current-row highlight and review key applied
+      -- (explorer windows can be (re)opened at any time; idempotent + cheap).
       require("neo-review.integrations.snacks_explorer").ensure_cursor_hl()
+      require("neo-review.integrations.snacks_explorer").ensure_review_key()
     end,
   })
 
@@ -480,6 +481,55 @@ function M.mark_file_reviewed(rel)
   if marking and config.options.review.advance_after_file then
     require("neo-review.nav").file(1)
   end
+end
+
+---Toggle reviewed for every changed file at/under PATH (file or folder;
+---absolute or repo-relative, "" = whole repo). Marks when anything under it
+---is outstanding, unmarks when everything is already reviewed — same toggle
+---semantics as mark_file_reviewed, one level up.
+function M.mark_tree_reviewed(path)
+  if not session.enabled then
+    vim.notify("neo-review: review mode is off (:NeoReviewToggle)", vim.log.levels.INFO)
+    return
+  end
+  local rel = path or ""
+  if rel:sub(1, 1) == "/" then
+    local norm = vim.uv.fs_realpath(vim.fs.normalize(rel)) or vim.fs.normalize(rel)
+    if norm == session.root then
+      rel = ""
+    elseif norm:sub(1, #session.root + 1) == session.root .. "/" then
+      rel = norm:sub(#session.root + 2)
+    else
+      vim.notify("neo-review: " .. path .. " is outside the repo", vim.log.levels.INFO)
+      return
+    end
+  end
+  local hashes, outstanding, matched = {}, 0, 0
+  for _, f in ipairs(session.files) do
+    if rel == "" or f == rel or f:sub(1, #rel + 1) == rel .. "/" then
+      local info = M.file_review_info(f)
+      matched = matched + 1
+      outstanding = outstanding + (info.total - info.reviewed)
+      vim.list_extend(hashes, info.hashes)
+    end
+  end
+  if matched == 0 then
+    vim.notify("neo-review: no changed files under " .. (rel == "" and "the repo root" or rel), vim.log.levels.INFO)
+    return
+  end
+  local marking = outstanding > 0
+  state.set_many(session.root, session.reviewed, baseline.key(), hashes, marking)
+  after_reviewed_change(nil)
+  update_winbar()
+  vim.notify(
+    string.format(
+      "neo-review: %s marked %s (%d file%s)",
+      rel == "" and "everything" or rel,
+      marking and "reviewed" or "unreviewed",
+      matched,
+      matched == 1 and "" or "s"
+    )
+  )
 end
 
 ---Mark EVERY hunk in the changeset reviewed (opposite of clear_reviewed).

@@ -281,6 +281,41 @@ function M.sync()
   end
   M.refresh_changed_only()
   M.ensure_cursor_hl()
+  M.ensure_review_key()
+end
+
+---------------------------------------------------------------------------
+-- Explorer review key: while review mode is on, keymaps.explorer_review is
+-- claimed buffer-locally on explorer list buffers — it toggles reviewed for
+-- the file OR WHOLE FOLDER under the cursor (mark_tree_reviewed). Released
+-- when review mode turns off. Cheap and idempotent — called from sync()
+-- and BufEnter, like ensure_cursor_hl.
+---------------------------------------------------------------------------
+
+function M.ensure_review_key()
+  local km = require("neo-review.config").options.keymaps
+  local key = km and km.explorer_review
+  if not key or not (_G.Snacks and Snacks.picker) then
+    return
+  end
+  local enabled = require("neo-review.session").enabled
+  pcall(function()
+    for _, p in ipairs(Snacks.picker.get({ source = "explorer" })) do
+      local buf = p.list and p.list.win and p.list.win.buf
+      if buf and vim.api.nvim_buf_is_valid(buf) then
+        if enabled then
+          vim.keymap.set("n", key, function()
+            local item = p:current()
+            if item and item.file then
+              require("neo-review").mark_tree_reviewed(item.file)
+            end
+          end, { buffer = buf, silent = true, desc = "neo-review: toggle reviewed for this file/folder" })
+        else
+          pcall(vim.keymap.del, "n", key, { buffer = buf })
+        end
+      end
+    end
+  end)
 end
 
 ---------------------------------------------------------------------------
@@ -359,6 +394,7 @@ function M.review_explorer()
       saved_filters[p] = {}
     end
     M.ensure_cursor_hl()
+    M.ensure_review_key()
   end, 120)
 end
 

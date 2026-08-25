@@ -102,6 +102,7 @@ M.defaults = {
     explorer = "<leader>re", -- compound toggle: review mode on + explorer open, filtered + expanded to the changeset (again = close)
     explorer_filter = nil, -- changed-only filter alone (:NeoReviewExplorerFilter); no default key
     explorer_expand = "<leader>rE", -- snacks explorer: expand tree to reveal all changed files
+    explorer_review = "<leader>rv", -- IN the explorer list: toggle reviewed for the file/folder under the cursor (buffer-local while review is on)
     agent_ping = "<leader>ra", -- alert the wrapped agent session about open threads
     agent_permission = "<leader>rp", -- review the pending permission request(s)
 
