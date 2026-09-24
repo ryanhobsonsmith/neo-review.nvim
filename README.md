@@ -158,7 +158,11 @@ them. Threads render as a gutter `●` plus a one-line virtual summary; enter
 one (`<leader>rc`) and it opens octo-style as a real buffer in a split —
 type your reply at the bottom, `:w` sends it, `<leader>rx` resolves/reopens
 (also works on a commented code line), `q` closes; replying to a resolved
-thread reopens it. `]c`/`[c` jump between comments (cross-file). Anchors store snippet +
+thread reopens it. `]c`/`[c` jump between open comments (cross-file; from
+the thread pane too, and an open pane follows along). Agent walkthroughs are
+ordered *series* of threads: `]r`/`[r` walk the stops in order (resolved
+stops included) and each shows its position (`2/6`) inline, in the pane
+header, and in the threads picker. Anchors store snippet +
 context + Treesitter symbol and re-resolve by content, so threads survive
 edits and go *stale* (still listed) rather than pointing at wrong lines.
 
@@ -177,7 +181,7 @@ just work in any repo:
 - *"See the review comments I left for you and act on them"*
 - *"Review this PR and add comments for all issues you find"*
 - *"Walk me through this PR leaving comments in relevant places"* (numbered
-  stops you follow with `]c`)
+  stops you follow with `]r`)
 
 With review mode on, Neovim picks up agent-written threads within ~3s and
 notifies (`review: 2 new comment threads (]c to jump, <leader>rt to list)`,
@@ -192,7 +196,7 @@ hunk · `<leader>rv` mark hunk reviewed · `<leader>rV` mark whole file
 reviewed + advance (lock/generated files) · `gh` view full deleted
 lines of the hunk in a read-only split · `<leader>rf`/`<leader>rh`
 pickers · `<leader>rc` comment · `<leader>rt` threads picker · `]c`/`[c`
-next/prev comment.
+next/prev open comment · `]r`/`[r` next/prev walkthrough stop.
 
 **Review progress model**: reviewed-state is content-hashed, so an agent (or
 you) editing a reviewed hunk automatically returns it — and its file — to

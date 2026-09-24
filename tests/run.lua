@@ -1046,6 +1046,198 @@ test("mark_tree_reviewed: folder toggle marks/unmarks everything under it", func
   vim.fn.delete(repo, "rf")
 end)
 
+---------------------------------------------------------------- walkthrough series
+
+local function anc(line, text)
+  return { line = line, snippet = { text }, context_before = {}, context_after = {} }
+end
+
+test("series: thread.json field loads; malformed values make the thread standalone", function()
+  local tmp = vim.fn.tempname()
+  vim.fn.mkdir(tmp, "p")
+  local base = { file = "a.lua", kind = "note", anchor = anc(1, "x"), author = "claude", role = "agent", body = { "hi" } }
+  local ok_id = store.create(tmp, vim.tbl_extend("force", base, { series = { id = "s-1", pos = 2.5 } }))
+  eq({ id = "s-1", pos = 2.5 }, store.load(tmp, ok_id).series)
+  eq(nil, store.load(tmp, store.create(tmp, base)).series, "no field -> standalone")
+  for i, bad in ipairs({ "s-1", { pos = 1 }, { id = "", pos = 1 }, { id = "s-1", pos = "1" } }) do
+    local id = "bad" .. i
+    local dir = tmp .. "/.review/threads/" .. id
+    vim.fn.mkdir(dir, "p")
+    vim.fn.writefile({ vim.json.encode({ version = 1, id = id, file = "a.lua", kind = "note", created = "2026-01-01T00:00:00Z", anchor = anc(1, "x"), series = bad }) }, dir .. "/thread.json")
+    local t = store.load(tmp, id)
+    assert(t, "malformed series must not drop the thread")
+    eq(nil, t.series, "malformed series #" .. i)
+  end
+  vim.fn.delete(tmp, "rf")
+end)
+
+test("series: rank/total are stable and stop_sequence chains series by age", function()
+  local repo = vim.fn.tempname()
+  vim.fn.mkdir(repo, "p")
+  vim.fn.writefile({ "l1", "l2", "l3", "l4", "l5" }, repo .. "/a.txt")
+  local sess = require("neo-review.session")
+  local prev_root = sess.root
+  sess.root = repo
+  local threads = require("neo-review.threads")
+  local function mk(line, series, body)
+    return store.create(repo, { file = "a.txt", kind = "note", anchor = anc(line, "l" .. line), author = "claude", role = "agent", body = { body }, series = series })
+  end
+  -- series A (older): written out of order; pos decides, fraction slots in
+  local a3 = mk(1, { id = "s-a", pos = 3 }, "a3")
+  local a1 = mk(5, { id = "s-a", pos = 1 }, "a1")
+  local a2 = mk(3, { id = "s-a", pos = 2.5 }, "a2")
+  local b1 = mk(2, { id = "s-b", pos = 1 }, "b1")
+  local lone = mk(4, nil, "standalone")
+  local stale = mk(9, { id = "s-b", pos = 2 }, "stale") -- snippet l9 doesn't exist
+  store.set_status(repo, a2, "resolved", "ryan")
+  threads.reload()
+
+  local by = {}
+  for _, t in ipairs(threads.threads) do
+    by[t.id] = t
+  end
+  eq("1/3", threads.position(by[a1]))
+  eq("2/3", threads.position(by[a2]), "resolved stop keeps its number")
+  eq("3/3", threads.position(by[a3]))
+  eq("1/2", threads.position(by[b1]))
+  eq("2/2", threads.position(by[stale]), "stale stop still counted")
+  eq(nil, threads.position(by[lone]))
+
+  eq({ a1, a2, a3, b1, stale }, vim.tbl_map(function(t)
+    return t.id
+  end, threads.stop_sequence()), "series A (older) then B; resolved + stale included")
+  eq({ a3, b1, lone, a1 }, vim.tbl_map(function(t)
+    return t.id
+  end, threads.comment_sequence()), "]c stream: open + anchored, by line")
+
+  sess.root = prev_root
+  threads.threads = {}
+  vim.fn.delete(repo, "rf")
+end)
+
+test("series nav: ]r walks stops incl. resolved, ]c skips them, pane follows, draft protected", function()
+  local repo = vim.fn.tempname()
+  vim.fn.mkdir(repo, "p")
+  local function shr(cmd)
+    assert(vim.system(cmd, { cwd = repo, text = true }):wait().code == 0)
+  end
+  shr({ "git", "init", "-q", "-b", "main" })
+  shr({ "git", "config", "user.email", "t@t" })
+  shr({ "git", "config", "user.name", "t" })
+  local a, b = {}, {}
+  for i = 1, 10 do
+    a[i], b[i] = "a" .. i, "b" .. i
+  end
+  vim.fn.writefile(a, repo .. "/a.txt")
+  vim.fn.writefile(b, repo .. "/b.txt")
+  shr({ "git", "add", "." })
+  shr({ "git", "commit", "-q", "-m", "init" })
+
+  local function mk(file, line, series, body)
+    return store.create(repo, { file = file, kind = "note", anchor = anc(line, file:sub(1, 1) .. line), author = "claude", role = "agent", body = { body }, series = series })
+  end
+  -- walkthrough order b:5 -> a:8 -> a:2 (deliberately not positional)
+  local s1 = mk("b.txt", 5, { id = "s-w", pos = 1 }, "stop one")
+  local s2 = mk("a.txt", 8, { id = "s-w", pos = 2 }, "stop two")
+  local s3 = mk("a.txt", 2, { id = "s-w", pos = 3 }, "stop three")
+  mk("a.txt", 5, nil, "standalone")
+  -- stale stop between 1 and 2 (snippet "z1" is nowhere): counted, stepped over
+  store.create(repo, { file = "a.txt", kind = "note", anchor = anc(1, "z1"), author = "claude", role = "agent", body = { "gone" }, series = { id = "s-w", pos = 1.5 } })
+
+  -- A foreign buffer-local ]c (like LazyVim's next-class) must survive review mode.
+  vim.cmd.cd(repo)
+  vim.cmd.edit(repo .. "/a.txt")
+  local abuf = vim.api.nvim_get_current_buf()
+  vim.keymap.set("n", "]c", "<Nop>", { buffer = abuf, desc = "foreign class jump" })
+
+  require("neo-review.config").setup({ agent = { sandbox = { enabled = false } } })
+  local review = require("neo-review")
+  local nav = require("neo-review.nav")
+  local ui = require("neo-review.threads.ui")
+  local threads = require("neo-review.threads")
+  review.enable()
+  eq("Review: next comment (review mode)", vim.fn.maparg("]c", "n", false, true).desc, "review claims ]c")
+
+  local function here()
+    local cache = require("neo-review.session").bufs[vim.api.nvim_get_current_buf()]
+    return (cache and cache.relpath or "?") .. ":" .. vim.api.nvim_win_get_cursor(0)[1]
+  end
+
+  vim.api.nvim_win_set_cursor(0, { 1, 0 })
+  nav.stop(1)
+  eq("b.txt:5", here(), "no current stop -> stop 1")
+  nav.stop(1)
+  eq("a.txt:8", here(), "stop 2 (stale stop in between stepped over)")
+  store.set_status(repo, s2, "resolved", "ryan")
+  threads.sync()
+  nav.stop(1)
+  eq("a.txt:2", here(), "from a RESOLVED stop, ]r still advances")
+  nav.stop(-1)
+  eq("a.txt:8", here(), "[r lands on the resolved stop")
+  vim.api.nvim_win_set_cursor(0, { 10, 0 })
+  nav.stop(1)
+  eq("a.txt:2", here(), "cursor wandered off: continue from last stop")
+  nav.stop(1)
+  eq("b.txt:5", here(), "wraps to stop 1")
+
+  -- ]c: open threads positionally, resolved stop a:8 skipped
+  vim.cmd.edit(repo .. "/a.txt")
+  vim.api.nvim_win_set_cursor(0, { 1, 0 })
+  local walk = {}
+  for _ = 1, 4 do
+    nav.comment(1)
+    walk[#walk + 1] = here()
+  end
+  eq({ "a.txt:2", "a.txt:5", "b.txt:5", "a.txt:2" }, walk)
+  nav.comment(-1)
+  eq("b.txt:5", here(), "[c wraps backwards")
+
+  -- labels: inline virt text and resolved stop's quiet position
+  vim.cmd.edit(repo .. "/a.txt")
+  local virt = {}
+  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(abuf, threads.ns, 0, -1, { details = true })) do
+    for _, chunk in ipairs(m[4].virt_text or {}) do
+      virt[#virt + 1] = chunk[1]
+    end
+  end
+  local joined = table.concat(virt, "|")
+  assert(joined:find("4/4 · note", 1, true), joined)
+  assert(joined:find("✓ 3/4", 1, true), joined)
+
+  -- pane follows ]c/]r and keeps focus when used from inside it
+  local by = {}
+  for _, t in ipairs(threads.threads) do
+    by[t.id] = t
+  end
+  ui.open(by[s1])
+  local pane = vim.api.nvim_get_current_win()
+  eq(s1, ui.buf_thread_id(vim.api.nvim_get_current_buf()))
+  assert(vim.api.nvim_buf_get_lines(0, 0, 1, false)[1]:find("1/4", 1, true), "pane header shows position")
+  nav.stop(1) -- from the pane: ui.open remembered stop 1
+  eq(pane, vim.api.nvim_get_current_win(), "focus stays in pane")
+  eq(s2, ui.buf_thread_id(vim.api.nvim_win_get_buf(pane)), "pane retargeted to stop 2")
+  nav.comment(1) -- from pane showing a:8 -> next open after it is b:5
+  eq(s1, ui.buf_thread_id(vim.api.nvim_win_get_buf(pane)))
+  eq(pane, vim.api.nvim_get_current_win())
+
+  -- unsent draft: pane is not switched
+  local pbuf = vim.api.nvim_win_get_buf(pane)
+  vim.api.nvim_buf_set_lines(pbuf, -1, -1, false, { "half-typed reply" })
+  eq(true, vim.bo[pbuf].modified)
+  nav.stop(1)
+  eq(s1, ui.buf_thread_id(vim.api.nvim_win_get_buf(pane)), "draft protects the pane")
+  eq("half-typed reply", vim.api.nvim_buf_get_lines(pbuf, -2, -1, false)[1])
+  vim.bo[pbuf].modified = false
+  vim.api.nvim_win_close(pane, true)
+
+  review.disable()
+  eq("foreign class jump", vim.fn.maparg("]c", "n", false, true).desc, "displaced buffer-local map restored")
+
+  vim.cmd.cd(root)
+  require("neo-review.config").setup({})
+  vim.fn.delete(repo, "rf")
+end)
+
 ----------------------------------------------------------------
 
 if failed > 0 then

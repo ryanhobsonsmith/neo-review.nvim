@@ -39,7 +39,15 @@ local function render_lines(t)
   local status = t.status:upper()
   local head_sym = t.status == "open" and "●" or "✓"
   local status_hl = t.status == "open" and "NeoReviewThreadOpen" or "NeoReviewThreadResolved"
-  local head = string.format("%s %s:%d · %s · ", head_sym, t.file, t.lnum or (t.anchor and t.anchor.line) or 0, t.kind)
+  local pos = threads.position(t)
+  local head = string.format(
+    "%s %s:%d · %s · %s",
+    head_sym,
+    t.file,
+    t.lnum or (t.anchor and t.anchor.line) or 0,
+    t.kind,
+    pos and (pos .. " · ") or ""
+  )
   lines[1] = head .. status
   marks[#marks + 1] = { 0, 0, #head, "NeoReviewThreadHeader" }
   marks[#marks + 1] = { 0, #head, -1, status_hl }
@@ -114,6 +122,8 @@ local function repaint(buf)
     for _, loaded in ipairs(threads.threads) do
       if loaded.id == st.id then
         t.lnum = loaded.lnum or t.lnum
+        -- rank/total need the whole series; only the controller has that.
+        t.series = loaded.series or t.series
       end
     end
     lines, marks = render_lines(t)
@@ -221,6 +231,7 @@ end
 
 ---The window currently acting as the thread panel (any window showing a
 ---thread buffer), plus that buffer.
+---@return integer?, integer?
 local function panel_win()
   for _, win in ipairs(vim.api.nvim_list_wins()) do
     local b = vim.api.nvim_win_get_buf(win)
@@ -258,9 +269,55 @@ local function open_split(buf)
   vim.wo.breakindent = true
 end
 
+---Existing (valid) thread buffer for a thread id.
+local function buf_for(id)
+  for buf, st in pairs(states) do
+    if st.id == id and vim.api.nvim_buf_is_valid(buf) then
+      return buf
+    end
+  end
+end
+
+---Point an already-open thread panel at `thread` without moving focus or
+---opening a split (]c / ]r keep the pane following along). Leaves the panel
+---alone when it holds an unsent draft: pane buffers are bufhidden=wipe, so
+---swapping one out would destroy the typed text.
+---@param opts { notify: boolean }? notify when the draft guard blocks
+---@return boolean shown
+function M.show_in_panel(thread, opts)
+  local win, cur = panel_win()
+  if not win or not cur then
+    return false
+  end
+  if states[cur].id == thread.id then
+    if not vim.bo[cur].modified then
+      repaint(cur)
+    end
+    return true
+  end
+  if vim.bo[cur].modified then
+    if opts and opts.notify then
+      vim.notify("neo-review: unsent draft in thread panel — not switching it", vim.log.levels.INFO)
+    end
+    return false
+  end
+  local buf = buf_for(thread.id)
+  if not buf then
+    buf = make_buf("neo-review-thread://" .. thread.id)
+    states[buf] = { id = thread.id }
+  end
+  vim.api.nvim_win_set_buf(win, buf)
+  repaint(buf)
+  threads.render_all()
+  return true
+end
+
 ---Open an existing thread in a split. If it's already open, reuse it:
 ---focus its window (or show the existing buffer in a new split) and repaint.
 function M.open(thread)
+  if thread.series then
+    require("neo-review.nav").remember_stop(thread.id)
+  end
   for buf, st in pairs(states) do
     if st.id == thread.id and vim.api.nvim_buf_is_valid(buf) then
       local win = vim.fn.bufwinid(buf)

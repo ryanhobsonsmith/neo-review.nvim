@@ -168,71 +168,196 @@ function M.file(dir)
   open_file_hunk(target, "first")
 end
 
----Next/prev open comment thread; wraps across files with threads.
----@param dir 1|-1
-function M.comment(dir)
+---------------------------------------------------------------- comments
+
+---Thread id shown in the current window's thread buffer (nil elsewhere, and
+---for a not-yet-created thread).
+local function pane_thread_id()
+  return require("neo-review.threads.ui").buf_thread_id(vim.api.nvim_get_current_buf())
+end
+
+local function in_pane()
+  return vim.bo[vim.api.nvim_get_current_buf()].filetype == "reviewthread"
+end
+
+---A normal window to show code in: the current one if it's a plain file
+---window, else one already showing `file`, else the largest plain window.
+---Never the thread pane or sidebars (explorer, quickfix, terminals).
+local function code_win(file)
+  local function plain(win)
+    local b = vim.api.nvim_win_get_buf(win)
+    return vim.api.nvim_win_get_config(win).relative == "" and vim.bo[b].buftype == ""
+  end
+  local cur = vim.api.nvim_get_current_win()
+  if plain(cur) then
+    return cur
+  end
+  local best, best_area
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    if plain(win) then
+      local cache = session.bufs[vim.api.nvim_win_get_buf(win)]
+      if cache and cache.relpath == file then
+        return win
+      end
+      local area = vim.api.nvim_win_get_width(win) * vim.api.nvim_win_get_height(win)
+      if not best_area or area > best_area then
+        best, best_area = win, area
+      end
+    end
+  end
+  if best then
+    return best
+  end
+  vim.cmd("leftabove vsplit")
+  return vim.api.nvim_get_current_win()
+end
+
+---Show `t` in a code window, retarget an open thread pane at it, and leave
+---focus where the key was pressed (pane stays focused when used from it).
+local function goto_thread(t)
+  local from_win = vim.api.nvim_get_current_win()
+  local from_pane = in_pane()
+  local win = code_win(t.file)
+  vim.api.nvim_set_current_win(win)
+  local cache = session.bufs[vim.api.nvim_get_current_buf()]
+  if not cache or cache.relpath ~= t.file then
+    vim.cmd.edit(vim.fn.fnameescape(session.root .. "/" .. t.file))
+    require("neo-review").attach(vim.api.nvim_get_current_buf())
+  end
+  local line_count = vim.api.nvim_buf_line_count(0)
+  vim.api.nvim_win_set_cursor(0, { math.min(t.lnum, line_count), 0 })
+  vim.cmd("normal! zz")
+  require("neo-review.threads.ui").show_in_panel(t, { notify = from_pane })
+  if from_pane and vim.api.nvim_win_is_valid(from_win) then
+    vim.api.nvim_set_current_win(from_win)
+  end
+end
+
+local function review_on()
   if not session.enabled then
     vim.notify("neo-review: review mode is off (:NeoReviewToggle)", vim.log.levels.INFO)
+    return false
+  end
+  return true
+end
+
+---]c/[c: next/prev OPEN thread in positional order (file, then line),
+---wrapping across files. Works from the thread pane too (relative to the
+---thread it shows) and retargets an open pane.
+---@param dir 1|-1
+function M.comment(dir)
+  if not review_on() then
     return
   end
   local threads = require("neo-review.threads")
-  local buf = vim.api.nvim_get_current_buf()
-  local lnum = vim.api.nvim_win_get_cursor(0)[1]
-
-  local here = threads.for_buf(buf)
-  local candidate
-  if dir == 1 then
-    for _, t in ipairs(here) do
-      if t.lnum > lnum then
-        candidate = t
-        break
-      end
-    end
-  else
-    for i = #here, 1, -1 do
-      if here[i].lnum < lnum then
-        candidate = here[i]
-        break
-      end
-    end
-  end
-  if candidate then
-    vim.api.nvim_win_set_cursor(0, { candidate.lnum, 0 })
-    vim.cmd("normal! zz")
-    return
-  end
-
-  -- Cross-file wrap over files that have open, anchored threads.
-  local files, seen = {}, {}
-  for _, t in ipairs(threads.threads) do
-    if t.status == "open" and t.lnum and not seen[t.file] then
-      seen[t.file] = true
-      files[#files + 1] = t.file
-    end
-  end
-  table.sort(files)
-  if #files == 0 then
+  local seq = threads.comment_sequence()
+  if #seq == 0 then
     vim.notify("neo-review: no open comment threads", vim.log.levels.INFO)
     return
   end
-  local cache = session.bufs[buf]
-  local rel = cache and cache.relpath
-  local idx
-  for i, f in ipairs(files) do
-    if f == rel then
-      idx = i
+  -- Reference position: the pane's thread, or the cursor in an attached buffer.
+  local ref_file, ref_lnum
+  if in_pane() then
+    local id = pane_thread_id()
+    for _, t in ipairs(threads.threads) do
+      if t.id == id and t.lnum then
+        ref_file, ref_lnum = t.file, t.lnum
+      end
+    end
+  else
+    local cache = session.bufs[vim.api.nvim_get_current_buf()]
+    if cache then
+      ref_file, ref_lnum = cache.relpath, vim.api.nvim_win_get_cursor(0)[1]
     end
   end
-  local next_idx = idx and (((idx - 1 + dir) % #files) + 1) or (dir == 1 and 1 or #files)
-  vim.cmd.edit(vim.fn.fnameescape(session.root .. "/" .. files[next_idx]))
-  local nbuf = vim.api.nvim_get_current_buf()
-  require("neo-review").attach(nbuf)
-  local list = threads.for_buf(nbuf)
-  local target = dir == 1 and list[1] or list[#list]
-  if target then
-    vim.api.nvim_win_set_cursor(0, { math.min(target.lnum, vim.api.nvim_buf_line_count(nbuf)), 0 })
-    vim.cmd("normal! zz")
+  local function before(af, al, bf, bl)
+    return af < bf or (af == bf and al < bl)
   end
+  local target
+  if ref_file then
+    if dir == 1 then
+      for _, t in ipairs(seq) do
+        if before(ref_file, ref_lnum, t.file, t.lnum) then
+          target = t
+          break
+        end
+      end
+    else
+      for i = #seq, 1, -1 do
+        if before(seq[i].file, seq[i].lnum, ref_file, ref_lnum) then
+          target = seq[i]
+          break
+        end
+      end
+    end
+  end
+  goto_thread(target or (dir == 1 and seq[1] or seq[#seq]))
+end
+
+-- Last walkthrough stop visited/opened: lets ]r continue from stop N after
+-- the cursor has wandered off it to read code.
+local last_stop = nil ---@type string?
+
+---Record the current walkthrough stop (ui.open calls this for series threads).
+function M.remember_stop(id)
+  last_stop = id
+end
+
+---]r/[r: next/prev walkthrough stop in series order. Resolved stops are
+---NOT skipped (a reader resolving stops as they go can still step back);
+---stale (unanchored) stops are stepped over.
+---@param dir 1|-1
+function M.stop(dir)
+  if not review_on() then
+    return
+  end
+  local threads = require("neo-review.threads")
+  local seq = threads.stop_sequence()
+  if #seq == 0 then
+    vim.notify("neo-review: no walkthrough stops", vim.log.levels.INFO)
+    return
+  end
+  local index = {}
+  for i, t in ipairs(seq) do
+    index[t.id] = i
+  end
+  -- Current stop: the pane's thread, else a stop on the cursor line, else
+  -- the last one visited.
+  local cur
+  if in_pane() then
+    cur = index[pane_thread_id() or ""]
+  else
+    local cache = session.bufs[vim.api.nvim_get_current_buf()]
+    if cache then
+      local lnum = vim.api.nvim_win_get_cursor(0)[1]
+      for i, t in ipairs(seq) do
+        if t.file == cache.relpath and t.lnum == lnum then
+          cur = i
+          break
+        end
+      end
+    end
+  end
+  cur = cur or (last_stop and index[last_stop])
+  local target
+  for step = 1, #seq do
+    local i
+    if cur then
+      i = ((cur - 1 + dir * step) % #seq) + 1
+    else
+      i = dir == 1 and step or (#seq - step + 1)
+    end
+    if seq[i].lnum then
+      target = seq[i]
+      break
+    end
+  end
+  if not target then
+    vim.notify("neo-review: every walkthrough stop is stale (its code moved or changed)", vim.log.levels.INFO)
+    return
+  end
+  last_stop = target.id
+  goto_thread(target)
 end
 
 ---Load every hunk across the changeset into the quickfix list.

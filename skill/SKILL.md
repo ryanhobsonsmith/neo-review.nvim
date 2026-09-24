@@ -61,6 +61,14 @@ unique hex string you generate (e.g. from timestamp + random).
   re-locates the thread by content — an inaccurate snippet makes the thread
   go stale (unanchored), so exact snippet text matters more than the line
   number.
+- `series` (optional, walkthroughs only): `{ "id": "s-68adf3a19c", "pos": 1 }`.
+  Every stop of one walkthrough shares the `id` (`s-` + a hex string you
+  generate like a thread id); `pos` orders the stops (1, 2, 3 …). The
+  editor numbers the stops itself ("2/6") from `pos` — never write that
+  number into a message. To add a stop to an existing walkthrough later,
+  create a new thread with an unused `pos`; fractions are fine (`2.5` sits
+  between 2 and 3). Never edit an existing `thread.json` to renumber.
+  Ordinary review comments have no `series` field.
 
 ## Timestamps: always read the real clock
 
@@ -135,15 +143,18 @@ editor:
 
 1. Read the whole changeset first; decide the order that tells the clearest
    story (rarely file order): entry point → core change → consequences.
-2. Leave one `note` thread per stop, anchored where the reader should look;
-   the first line is the headline ("2/6 · the baseline ref that everything
-   diffs against"), following lines explain what to see and why it matters.
-   Number the stops (1/N, 2/N …) so `<leader>rt`'s list reads in order.
+2. Plan every stop before writing any. Then leave one `note` thread per
+   stop, anchored where the reader should look, each with the same
+   `series.id` and its `series.pos` (1 for the first stop, 2 for the next …).
+   The first line is a plain headline ("the baseline ref that everything
+   diffs against"); following lines explain what to see and why it matters.
+   **Do not put "1/N" or "2/6" in message bodies** — the editor renders
+   each stop's position from `series`.
 3. Keep stops focused — 4–8 for a typical changeset. Point out risks and
    non-obvious connections, not line-by-line mechanics.
-4. Tell the user to follow along with `]c` (next comment) from the top of
-   the repo, and finish with a closing reply on stop 1 summarizing the whole
-   changeset.
+4. Tell the user to follow along with `]r` / `[r` (next / previous
+   walkthrough stop, in order, from anywhere in the repo), and finish with
+   a closing reply on stop 1 summarizing the whole changeset.
 
 ## Etiquette
 

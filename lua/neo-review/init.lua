@@ -87,7 +87,11 @@ end
 -- Review mode claims hunk-nav keys buffer-locally on attached buffers:
 -- gitsigns (e.g. in LazyVim) binds ]h/[h buffer-locally, which would shadow
 -- our global maps and keep navigating working-tree hunks regardless of the
--- review baseline. Released again in disable().
+-- review baseline. Released again in disable(), which puts back whatever
+-- buffer-local map we displaced (LazyVim's ]c = next class, a filetype
+-- plugin's ]], gitsigns' ]h …) instead of leaving the key dead.
+local displaced = {} ---@type table<integer, table<string, table>>
+
 local function claim_buffer_keymaps(buf)
   local km = config.options.keymaps
   if not km then
@@ -96,6 +100,15 @@ local function claim_buffer_keymaps(buf)
   local nav = require("neo-review.nav")
   local set = function(lhs, fn, desc)
     if lhs then
+      local prev = vim.api.nvim_buf_call(buf, function()
+        return vim.fn.maparg(lhs, "n", false, true)
+      end)
+      -- Only buffer-local maps that aren't ours (re-claims are frequent:
+      -- BufEnter, GitSignsUpdate); the latest foreign one wins.
+      if prev.buffer == 1 and not (prev.desc or ""):find("^Review:") then
+        displaced[buf] = displaced[buf] or {}
+        displaced[buf][lhs] = prev
+      end
       vim.keymap.set("n", lhs, fn, { buffer = buf, desc = desc, silent = true })
     end
   end
@@ -126,6 +139,12 @@ local function claim_buffer_keymaps(buf)
   set(km.prev_comment, function()
     nav.comment(-1)
   end, "Review: prev comment (review mode)")
+  set(km.next_stop, function()
+    nav.stop(1)
+  end, "Review: next walkthrough stop (review mode)")
+  set(km.prev_stop, function()
+    nav.stop(-1)
+  end, "Review: prev walkthrough stop (review mode)")
 end
 
 local function release_buffer_keymaps(buf)
@@ -145,11 +164,19 @@ local function release_buffer_keymaps(buf)
     km.resolve,
     km.next_comment,
     km.prev_comment,
+    km.next_stop,
+    km.prev_stop,
   }) do
     if lhs then
       pcall(vim.keymap.del, "n", lhs, { buffer = buf })
     end
   end
+  for _, prev in pairs(displaced[buf] or {}) do
+    vim.api.nvim_buf_call(buf, function()
+      pcall(vim.fn.mapset, "n", false, prev)
+    end)
+  end
+  displaced[buf] = nil
 end
 
 local function reviewed_fn(relpath, lines)
@@ -774,6 +801,12 @@ function M.setup(opts)
     map(km.prev_comment, function()
       nav.comment(-1)
     end, "Review: prev comment")
+    map(km.next_stop, function()
+      nav.stop(1)
+    end, "Review: next walkthrough stop")
+    map(km.prev_stop, function()
+      nav.stop(-1)
+    end, "Review: prev walkthrough stop")
   end
 end
 

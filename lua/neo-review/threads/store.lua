@@ -7,6 +7,7 @@
 -- files, which git merges without conflicts.
 --
 --   thread.json                       immutable: anchor + kind + creator
+--                                     (+ optional series membership)
 --   msg-<ts>-<rand>-<author>.json     one message, append-only
 --   status-<ts>-<rand>-<author>.json  status event; latest ts wins
 local M = {}
@@ -97,6 +98,15 @@ end
 ---@field ts string ISO 8601
 ---@field body string[]
 
+---Walkthrough membership, written once at creation. `pos` only sorts stops
+---within a series (fractional values slot a late stop between two others);
+---`rank`/`total` are the displayed position, filled in by threads.reload().
+---@class review.ThreadSeries
+---@field id string
+---@field pos number
+---@field rank integer?
+---@field total integer?
+
 ---@class review.Thread
 ---@field id string
 ---@field dir string
@@ -106,10 +116,11 @@ end
 ---@field anchor { line: integer, snippet: string[], context_before: string[], context_after: string[], symbol: string? }
 ---@field messages review.ThreadMessage[]
 ---@field status "open"|"resolved"
+---@field series review.ThreadSeries?
 
 ---Create a new thread with its first message. Returns the thread id.
 ---@param root string
----@param opts { file: string, kind: string, anchor: table, author: string, role: string, body: string[] }
+---@param opts { file: string, kind: string, anchor: table, author: string, role: string, body: string[], series: { id: string, pos: number }? }
 ---@return string
 function M.create(root, opts)
   require("neo-review.repo").ensure(root)
@@ -122,6 +133,7 @@ function M.create(root, opts)
     kind = opts.kind,
     created = iso_now(),
     anchor = opts.anchor,
+    series = opts.series and { id = opts.series.id, pos = opts.series.pos } or nil,
   })
   M.reply(root, id, opts)
   return id
@@ -147,6 +159,16 @@ function M.set_status(root, id, status, author)
     author = author,
     ts = iso_now(),
   })
+end
+
+---A thread.json `series` value, or nil when absent/malformed (a malformed
+---field makes the thread standalone rather than dropping it).
+---@return review.ThreadSeries?
+local function valid_series(s)
+  if type(s) == "table" and type(s.id) == "string" and s.id ~= "" and type(s.pos) == "number" then
+    return { id = s.id, pos = s.pos }
+  end
+  return nil
 end
 
 ---Load one thread directory into a materialized thread. nil if malformed.
@@ -194,6 +216,7 @@ function M.load(root, id)
     anchor = meta.anchor,
     messages = messages,
     status = last and last.status or "open",
+    series = valid_series(meta.series),
   }
 end
 

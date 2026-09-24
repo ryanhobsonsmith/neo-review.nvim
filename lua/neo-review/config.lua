@@ -106,8 +106,10 @@ M.defaults = {
     agent_ping = "<leader>ra", -- alert the wrapped agent session about open threads
     agent_permission = "<leader>rp", -- review the pending permission request(s)
 
-    next_comment = "]c",
+    next_comment = "]c", -- next open comment, by file then line
     prev_comment = "[c",
+    next_stop = "]r", -- next walkthrough stop (series order; includes resolved stops)
+    prev_stop = "[r",
   },
 }
 

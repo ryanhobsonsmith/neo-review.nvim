@@ -241,15 +241,31 @@ local THREAD_SYMBOL = {
 function M.threads()
   local threads = require("neo-review.threads")
   threads.reload()
+  -- Walkthrough stops first, in ]r order (resolved included); then the
+  -- rest newest-first as store.list returns them.
+  local stop_idx = {}
+  for i, t in ipairs(threads.stop_sequence()) do
+    stop_idx[t.id] = i
+  end
   local items = {}
-  for _, t in ipairs(threads.threads) do
+  for i, t in ipairs(threads.threads) do
     local state = t.lnum and t.status or "stale"
     items[#items + 1] = {
       thread = t,
       state = state,
       lnum = t.lnum or t.anchor.line,
       summary = threads.summary(t),
+      pos = threads.position(t) or "",
+      order = stop_idx[t.id] or (#threads.threads + i),
     }
+  end
+  table.sort(items, function(a, b)
+    return a.order < b.order
+  end)
+  -- Position column only when there is a walkthrough to number.
+  local pos_width = next(stop_idx) and 7 or 0
+  local function pos_col(it)
+    return pos_width > 0 and string.format("%-" .. pos_width .. "s", it.pos) or ""
   end
   if #items == 0 then
     vim.notify("neo-review: no comment threads", vim.log.levels.INFO)
@@ -269,7 +285,7 @@ function M.threads()
       title = title,
       items = vim.tbl_map(function(it)
         return {
-          text = table.concat({ it.thread.kind, it.thread.file, it.summary }, " "),
+          text = table.concat({ it.pos, it.thread.kind, it.thread.file, it.summary }, " "),
           file = session.root .. "/" .. it.thread.file,
           pos = { it.lnum, 0 },
           item = it,
@@ -280,6 +296,7 @@ function M.threads()
         local sym = THREAD_SYMBOL[it.state]
         return {
           { sym[1] .. " ", sym[2] },
+          { pos_col(it), "SnacksPickerIdx" },
           { string.format("%-10s", it.thread.kind), "SnacksPickerSpecial" },
           { it.thread.file, "SnacksPickerFile" },
           { ":" .. it.lnum .. " ", "SnacksPickerRow" },
@@ -300,7 +317,7 @@ function M.threads()
 
   vim.ui.select(
     vim.tbl_map(function(it)
-      return string.format("%s %-10s %s:%d  %s", THREAD_SYMBOL[it.state][1], it.thread.kind, it.thread.file, it.lnum, it.summary)
+      return string.format("%s %s%-10s %s:%d  %s", THREAD_SYMBOL[it.state][1], pos_col(it), it.thread.kind, it.thread.file, it.lnum, it.summary)
     end, items),
     { prompt = title },
     function(_, i)
