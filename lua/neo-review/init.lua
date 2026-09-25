@@ -744,10 +744,7 @@ function M.setup(opts)
 
   if config.options.skill.auto_install then
     vim.schedule(function()
-      local skill = require("neo-review.skill")
-      if skill.status() == "missing" then
-        skill.install()
-      end
+      require("neo-review.skill").auto_install()
     end)
   end
 

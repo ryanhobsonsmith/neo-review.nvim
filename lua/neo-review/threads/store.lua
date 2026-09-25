@@ -1,14 +1,18 @@
 -- Thread storage: .review/threads/<id>/ in the repo.
 --
--- CONFLICT-FREE BY CONSTRUCTION (see design doc): every write is a NEW file
--- with a collision-proof name, and no file is ever edited after creation.
--- Thread state (messages, resolved/open) is materialized by reading the
--- directory. Concurrent branches can therefore only ever add different
--- files, which git merges without conflicts.
+-- One file per message / status event, each with a collision-proof name:
+-- the editor and an agent writing the same thread seconds apart (or two
+-- branches) add DIFFERENT files, so they never overwrite each other. Thread
+-- state (messages, resolved/open) is materialized by reading the directory.
 --
---   thread.json                       immutable: anchor + kind + creator
+-- Files are EDITABLE in place: agents correct their own stops and messages
+-- (wrong claim, bad anchor, renumbered series). Edits are rare and
+-- single-author, so the occasional git conflict is an acceptable price.
+-- The poll fingerprint includes mtimes so in-place edits re-render.
+--
+--   thread.json                       anchor + kind + creator
 --                                     (+ optional series membership)
---   msg-<ts>-<rand>-<author>.json     one message, append-only
+--   msg-<ts>-<rand>-<author>.json     one message
 --   status-<ts>-<rand>-<author>.json  status event; latest ts wins
 local M = {}
 
@@ -98,7 +102,7 @@ end
 ---@field ts string ISO 8601
 ---@field body string[]
 
----Walkthrough membership, written once at creation. `pos` only sorts stops
+---Walkthrough membership. `pos` only sorts stops
 ---within a series (fractional values slot a late stop between two others);
 ---`rank`/`total` are the displayed position, filled in by threads.reload().
 ---@class review.ThreadSeries
@@ -220,10 +224,9 @@ function M.load(root, id)
   }
 end
 
----Delete a thread directory. Human-driven cleanup only — agents must never
----do this (the SKILL.md contract); it's the one operation that steps outside
----append-only, so it can raise ordinary git delete/modify conflicts if
----another branch touched the thread. Acceptable for an explicit cleanup op.
+---Delete a thread directory (editor cleanup; agents only on the user's
+---request, per SKILL.md). Can raise ordinary git delete/modify conflicts if
+---another branch touched the thread — acceptable for an explicit op.
 function M.delete(root, id)
   vim.fn.delete(threads_dir(root) .. "/" .. id, "rf")
 end

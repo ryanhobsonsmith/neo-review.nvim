@@ -65,14 +65,17 @@ function M.check()
     health.warn("last stderr: " .. vim.trim(require("neo-review.agent").last_stderr))
   end
 
-  health.start("external-session skill")
-  local skill_state, skill_detail = require("neo-review.skill").status()
-  if skill_state == "installed" then
-    health.ok("review-comments skill installed: " .. skill_detail)
-  elseif skill_state == "conflict" then
-    health.warn(skill_detail)
-  else
-    health.info("not installed (" .. skill_state .. ") — :NeoReviewSkillInstall lets external Claude Code sessions act on review comments")
+  health.start("external-session skills")
+  local skill = require("neo-review.skill")
+  for _, name in ipairs(skill.NAMES) do
+    local state, detail = skill.status_of(name)
+    if state == "installed" then
+      health.ok(name .. " installed: " .. detail)
+    elseif state == "conflict" then
+      health.warn(detail)
+    else
+      health.info(name .. " not installed (" .. state .. ": " .. detail .. ") — :NeoReviewSkillInstall links it for external Claude Code sessions")
+    end
   end
 
   health.start("agent sandbox (Docker Sandboxes / sbx microVMs)")

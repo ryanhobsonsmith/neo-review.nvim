@@ -192,7 +192,7 @@ end, { desc = "Toggle a live read-only view of the agent's activity (turns, tool
 
 vim.api.nvim_create_user_command("NeoReviewSkillInstall", function()
   require("neo-review.skill").install()
-end, { desc = "Symlink the review-comments skill into ~/.claude/skills for external Claude Code sessions" })
+end, { desc = "Symlink the neo-review and guided-review skills into ~/.claude/skills for external Claude Code sessions" })
 
 vim.api.nvim_create_user_command("NeoReviewAgentSandbox", function(cmd)
   review()

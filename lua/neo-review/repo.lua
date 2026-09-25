@@ -15,7 +15,7 @@ function M.ensure(root)
   -- Install/refresh the in-repo skill copy. The plugin's template is
   -- canonical and .review/SKILL.md is never hand-edited, so overwrite
   -- whenever the content drifts (e.g. after plugin updates fix the skill).
-  local template = vim.api.nvim_get_runtime_file("skill/SKILL.md", false)[1]
+  local template = vim.api.nvim_get_runtime_file("skills/neo-review/SKILL.md", false)[1]
   if template then
     local want = vim.fn.readfile(template)
     local have = vim.fn.filereadable(dir .. "/SKILL.md") == 1 and vim.fn.readfile(dir .. "/SKILL.md") or nil

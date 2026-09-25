@@ -151,10 +151,11 @@ is the boundary; the classifier still routes flagged actions to the inbox);
 
 ## Comment threads (phase 2)
 
-Line-anchored conversation threads, persisted in `.review/threads/` using an
-append-only, conflict-free-by-construction format (directory per thread, one
-immutable file per message, status via marker events) so projects may commit
-them. Threads render as a gutter `●` plus a one-line virtual summary; enter
+Line-anchored conversation threads, persisted in `.review/threads/` as a
+directory per thread with one file per message and status events as marker
+files, so the editor and an agent writing at the same time never clobber
+each other and projects may commit them. Agents may edit their own threads
+in place to correct them. Threads render as a gutter `●` plus a one-line virtual summary; enter
 one (`<leader>rc`) and it opens octo-style as a real buffer in a split —
 type your reply at the bottom, `:w` sends it, `<leader>rx` resolves/reopens
 (also works on a commented code line), `q` closes; replying to a resolved
@@ -175,13 +176,29 @@ resolve threads; the plugin polls and re-renders within a few seconds.
 
 No wrapped session required — run Claude Code yourself in a terminal in the
 repo and drive everything from there. One-time setup: `:NeoReviewSkillInstall`
-symlinks the `review-comments` skill into `~/.claude/skills/`, making these
-just work in any repo:
+(or `skill = { auto_install = true }`) symlinks the plugin's two skills,
+`neo-review` and `guided-review`, into `~/.claude/skills/`:
 
-- *"See the review comments I left for you and act on them"*
-- *"Review this PR and add comments for all issues you find"*
-- *"Walk me through this PR leaving comments in relevant places"* (numbered
-  stops you follow with `]r`)
+- `/neo-review [request]` primes the agent with the thread format and house
+  rules, checks open threads, then does whatever you ask while keeping the
+  threads in step with its work. With no request it responds to every
+  thread awaiting it. For example:
+  - `/neo-review` — answer and act on the comments I left
+  - `/neo-review conduct a PR review of this code` — review comments
+    anchored on the lines they're about
+  - `/neo-review give me a tour of this codebase` — hands off to
+    guided-review
+  - `/neo-review implement the retry logic` — does the work, then replies
+    to and resolves the threads it settled
+- `/guided-review [base | PR number | codebase | path] [focus]`: the agent
+  presents a change like its author would to teammates, or a codebase like
+  a maintainer onboarding you. You get a free-form overview in the terminal
+  (what and why, how it works as a whole, what to scrutinize) plus an
+  ordered series of stops through the most important code, which you
+  follow with `]r` / `[r`.
+
+The agent also picks these skills up on its own when you mention review
+comments or ask for a walkthrough, without the slash command.
 
 With review mode on, Neovim picks up agent-written threads within ~3s and
 notifies (`review: 2 new comment threads (]c to jump, <leader>rt to list)`,
@@ -283,8 +300,8 @@ minimal sandbox instead, symlink `dev/config/init.lua` to
 in `state.json`; per-repo agent choices in `agent.json`: `last_session_id`,
 `permission_mode`, `sandbox`, `sandboxed`, `profile`, `model` — all per-user)
 is always gitignored via a self-written `.review/.gitignore`;
-`threads/` uses an append-only, conflict-free-by-construction format so
-projects may choose to commit it.
+`threads/` uses one file per message (rarely edited in place), so projects
+may choose to commit it.
 
 ## License
 

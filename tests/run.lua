@@ -338,7 +338,7 @@ end)
 
 local store = require("neo-review.threads.store")
 
-test("threads: create/reply/resolve round-trip, append-only files", function()
+test("threads: create/reply/resolve round-trip, one file per message/event", function()
   local tmp = vim.fn.tempname()
   vim.fn.mkdir(tmp, "p")
   local id = store.create(tmp, {
@@ -365,7 +365,7 @@ test("threads: create/reply/resolve round-trip, append-only files", function()
   store.set_status(tmp, id, "open", "ryan")
   eq("open", store.load(tmp, id).status)
 
-  -- append-only invariant: thread dir contains only ever-growing distinct files
+  -- every message and status event is its own file
   local files = vim.fn.readdir(tmp .. "/.review/threads/" .. id)
   eq(5, #files, "thread.json + 2 msgs + 2 status events")
 
@@ -779,16 +779,38 @@ test("sandbox: sbx argv, per-project name, and custom overrides", function()
   require("neo-review.config").setup({})
 end)
 
-test("skill: auto_install on setup when missing", function()
+test("skill: auto_install on setup links missing skills and repairs dangling ones, not stale ones", function()
   local fake_home = vim.fn.tempname()
-  vim.fn.mkdir(fake_home, "p")
+  vim.fn.mkdir(fake_home .. "/skills", "p")
   local prev = vim.env.CLAUDE_CONFIG_DIR
   vim.env.CLAUDE_CONFIG_DIR = fake_home
+  local skill = require("neo-review.skill")
+  -- neo-review: dangling (its target directory is gone)
+  vim.uv.fs_symlink(fake_home .. "/gone/skill", fake_home .. "/skills/neo-review", { dir = true })
+  eq("dangling", (skill.status_of("neo-review")))
+  eq("missing", (skill.status_of("guided-review")))
+  -- legacy review-comments link from the old layout, now dangling: removed
+  vim.uv.fs_symlink(fake_home .. "/gone/skill", fake_home .. "/skills/review-comments", { dir = true })
+  -- a legacy-named link to someone else's live skill: left alone
+  vim.fn.mkdir(fake_home .. "/theirs", "p")
   require("neo-review").setup({ keymaps = false, skill = { auto_install = true } })
   vim.wait(500, function()
-    return require("neo-review.skill").status() == "installed"
+    return skill.status() == "installed"
   end, 20)
-  eq("installed", (require("neo-review.skill").status()))
+  eq("installed", (skill.status()))
+  eq(nil, vim.uv.fs_lstat(fake_home .. "/skills/review-comments"), "dangling legacy link removed")
+  vim.uv.fs_symlink(fake_home .. "/theirs", fake_home .. "/skills/review-comments", { dir = true })
+  skill.auto_install()
+  eq("link", vim.uv.fs_lstat(fake_home .. "/skills/review-comments").type, "foreign legacy-named link kept")
+
+  -- stale (deliberately pointed at another existing checkout): left alone
+  local elsewhere = fake_home .. "/dev-checkout"
+  vim.fn.mkdir(elsewhere, "p")
+  vim.uv.fs_unlink(fake_home .. "/skills/guided-review")
+  vim.uv.fs_symlink(elsewhere, fake_home .. "/skills/guided-review", { dir = true })
+  skill.auto_install()
+  eq("stale", (skill.status_of("guided-review")))
+
   vim.env.CLAUDE_CONFIG_DIR = prev
   require("neo-review.config").setup({})
   vim.fn.delete(fake_home, "rf")
@@ -796,7 +818,7 @@ end)
 
 ---------------------------------------------------------------- skill install
 
-test("skill: install symlinks, is idempotent, refuses non-symlink conflicts", function()
+test("skill: install links every skill, is idempotent, replaces stale, refuses conflicts", function()
   local fake_home = vim.fn.tempname()
   vim.fn.mkdir(fake_home, "p")
   local prev = vim.env.CLAUDE_CONFIG_DIR
@@ -806,17 +828,33 @@ test("skill: install symlinks, is idempotent, refuses non-symlink conflicts", fu
   eq("missing", (skill.status()))
   skill.install()
   eq("installed", (skill.status()))
-  local link = fake_home .. "/skills/review-comments"
-  eq("link", vim.uv.fs_lstat(link).type)
-  assert(vim.fn.filereadable(link .. "/SKILL.md") == 1, "SKILL.md not reachable through symlink")
+  for _, name in ipairs({ "neo-review", "guided-review" }) do
+    local link = fake_home .. "/skills/" .. name
+    eq("link", vim.uv.fs_lstat(link).type)
+    assert(vim.fn.filereadable(link .. "/SKILL.md") == 1, name .. "/SKILL.md not reachable through symlink")
+    local head = vim.fn.readfile(link .. "/SKILL.md", "", 2)[2]
+    eq("name: " .. name, head, "frontmatter name matches directory")
+  end
   skill.install() -- idempotent
   eq("installed", (skill.status()))
 
+  -- stale: an explicit install replaces it
+  local link = fake_home .. "/skills/guided-review"
+  vim.uv.fs_unlink(link)
+  vim.uv.fs_symlink(fake_home, link, { dir = true })
+  eq("stale", (skill.status_of("guided-review")))
+  skill.install()
+  eq("installed", (skill.status_of("guided-review")))
+
   -- conflict: a real directory in the way is never touched
+  link = fake_home .. "/skills/neo-review"
   vim.uv.fs_unlink(link)
   vim.fn.mkdir(link, "p")
   eq("conflict", (skill.status()))
+  local prev_notify = vim.notify
+  vim.notify = function() end
   skill.install()
+  vim.notify = prev_notify
   eq("directory", vim.uv.fs_lstat(link).type, "must not replace a real directory")
 
   vim.env.CLAUDE_CONFIG_DIR = prev
@@ -1043,6 +1081,32 @@ test("mark_tree_reviewed: folder toggle marks/unmarks everything under it", func
   review.disable()
   vim.cmd.cd(root)
   require("neo-review.config").setup({})
+  vim.fn.delete(repo, "rf")
+end)
+
+test("threads: in-place edits are picked up (poll fingerprint + reload)", function()
+  local repo = vim.fn.tempname()
+  vim.fn.mkdir(repo, "p")
+  local sess = require("neo-review.session")
+  local prev_root = sess.root
+  sess.root = repo
+  local threads = require("neo-review.threads")
+  local id = store.create(repo, { file = "a.txt", kind = "note", anchor = { line = 1, snippet = { "x" }, context_before = {}, context_after = {} }, author = "claude", role = "agent", body = { "retrieveWiki writes it" }, series = { id = "s-1", pos = 3 } })
+  local dir = repo .. "/.review/threads/" .. id
+  local before = threads._fingerprint()
+  -- same byte length, different text: size-only detection would miss it
+  local msg = vim.fn.glob(dir .. "/msg-*.json")
+  local body = table.concat(vim.fn.readfile(msg), "\n"):gsub("retrieveWiki writes it", "appendWikiQueryLog did")
+  vim.fn.writefile(vim.split(body, "\n"), msg)
+  local meta = vim.json.decode(table.concat(vim.fn.readfile(dir .. "/thread.json"), "\n"))
+  meta.series.pos = 1 -- renumber in place (same length as 3)
+  vim.fn.writefile({ vim.json.encode(meta) }, dir .. "/thread.json")
+  assert(threads._fingerprint() ~= before, "same-size in-place edit not detected")
+  threads.reload()
+  eq({ "appendWikiQueryLog did" }, threads.threads[1].messages[1].body)
+  eq(1, threads.threads[1].series.pos)
+  sess.root = prev_root
+  threads.threads = {}
   vim.fn.delete(repo, "rf")
 end)
 

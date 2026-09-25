@@ -255,7 +255,9 @@ function M.at_line(buf, lnum)
   return resolved
 end
 
----Cheap change detection for the poll loop: names + sizes of all thread files.
+---Cheap change detection for the poll loop: name + size + mtime of every
+---thread file. mtime (to the nanosecond) catches in-place edits that keep
+---the byte size, e.g. an agent fixing a word or renumbering a stop.
 local function compute_fingerprint()
   local dir = session.root .. "/.review/threads"
   if vim.fn.isdirectory(dir) == 0 then
@@ -263,11 +265,15 @@ local function compute_fingerprint()
   end
   local parts = {}
   for _, f in ipairs(vim.fn.globpath(dir, "*/*", false, true)) do
-    parts[#parts + 1] = f .. ":" .. vim.fn.getfsize(f)
+    local st = vim.uv.fs_stat(f)
+    if st then
+      parts[#parts + 1] = string.format("%s:%d:%d.%09d", f, st.size, st.mtime.sec, st.mtime.nsec or 0)
+    end
   end
   table.sort(parts)
   return table.concat(parts, "|")
 end
+M._fingerprint = compute_fingerprint -- tests
 
 ---Reload + re-render (call after any local write; the poll loop calls it
 ---when agents write .review/threads/ from outside).

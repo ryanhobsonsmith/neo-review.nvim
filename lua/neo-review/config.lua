@@ -31,9 +31,10 @@ M.defaults = {
     reviewed = "▏",
   },
   skill = {
-    -- Install the review-comments skill symlink into ~/.claude/skills on
-    -- setup() when missing (points at this plugin's directory, so it tracks
-    -- plugin updates). Explicit alternative: :NeoReviewSkillInstall.
+    -- Symlink the plugin's skills (neo-review, guided-review) into
+    -- ~/.claude/skills on setup() when missing or dangling (they point at
+    -- this plugin's directory, so they track plugin updates). Links you
+    -- pointed elsewhere are left alone. Explicit: :NeoReviewSkillInstall.
     auto_install = false,
   },
   comments = {
