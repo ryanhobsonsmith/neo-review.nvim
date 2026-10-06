@@ -34,17 +34,29 @@ inside tmux, set `extended-keys on`). Otherwise remap `keymaps.agent_open`.
 
 ```lua
 agent = {
-  cmd = "claude",        -- what runs in the terminal (add flags or use a wrapper)
+  cmd = "claude --permission-mode auto", -- must accept claude flags (wrappers: pass "$@")
+  hooks = true,          -- report claude's activity back to Neovim (below)
   ready_delay_ms = 1500, -- boot time a fresh claude gets before a ping is typed
 },
 ```
 
-The winbar shows `· agent` while the process is running. For a statusline:
-`require("neo-review").statusline()` returns `"agent"` or `""`.
-`require("neo-review").statusline_icon()` returns a `NeoReviewAgent`-colored
-`●`, and `require("neo-review").lualine()` is a ready-made lualine component.
-`User NeoReviewAgentStateChanged` fires on start and exit with
-`data = { running }`.
+claude starts in auto mode, so routine actions don't stop for approval. To
+know what it's doing while the float is hidden, the plugin starts it with
+`--settings` hooks (on top of your own). The hooks report back to this
+Neovim over `$NVIM`:
+
+- An alert when claude needs your permission, and when it finishes a turn
+  you weren't watching.
+- A status icon: `⏸` red = waiting for permission, `●` orange = working,
+  `●` green = idle, `○` dim = starting, hidden when not running. Use
+  `require("neo-review").lualine()` for lualine, or
+  `require("neo-review").statusline_icon()` for a native 'statusline'.
+- `require("neo-review").statusline()` returns the text form,
+  `agent:working` and so on.
+- `User NeoReviewAgentStateChanged` fires on every change, with
+  `data = { running, activity }`.
+
+With `hooks = false` the indicator only says whether claude is running.
 
 ## Commands
 

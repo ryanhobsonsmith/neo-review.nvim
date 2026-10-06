@@ -6,7 +6,9 @@ local config = require("neo-review.config")
 
 local M = {}
 
-local state = { buf = nil, job = nil, win = nil }
+-- activity (from claude's hooks): "starting" | "idle" | "working" | "waiting";
+-- nil when hooks are off.
+local state = { buf = nil, job = nil, win = nil, activity = nil }
 
 local function running()
   return state.job ~= nil and vim.fn.jobwait({ state.job }, 0)[1] == -1
@@ -15,8 +17,9 @@ end
 local function announce()
   vim.api.nvim_exec_autocmds("User", {
     pattern = "NeoReviewAgentStateChanged",
-    data = { running = running() },
+    data = { running = running(), activity = state.activity },
   })
+  vim.cmd("redrawstatus!")
 end
 
 -- Typed text and its Enter must arrive separately: in one burst the TUI
@@ -48,11 +51,48 @@ local function visible()
   return state.win ~= nil and vim.api.nvim_win_is_valid(state.win)
 end
 
+local HOOK_EVENTS = {
+  { "SessionStart", nil, "start" },
+  { "UserPromptSubmit", nil, "prompt" },
+  { "PostToolUse", "*", "tool" },
+  { "Stop", nil, "stop" },
+  { "Notification", "permission_prompt", "permission" },
+  { "Notification", "idle_prompt", "idle" },
+}
+
+---Settings file for `claude --settings`: hooks that report claude's activity
+---back to this Neovim over $NVIM (set in every :terminal job's env).
+---@return string path
+local function write_hook_settings()
+  local hooks = {}
+  for _, h in ipairs(HOOK_EVENTS) do
+    local event, matcher, name = h[1], h[2], h[3]
+    local command = string.format(
+      [=[[ -n "$NVIM" ] && %s --server "$NVIM" --remote-expr "v:lua.require'neo-review.agent'._hook('%s')" >/dev/null 2>&1; true]=],
+      vim.fn.shellescape(vim.v.progpath),
+      name
+    )
+    hooks[event] = hooks[event] or {}
+    table.insert(hooks[event], {
+      matcher = matcher,
+      hooks = { { type = "command", command = command, timeout = 5 } },
+    })
+  end
+  local path = vim.fn.tempname() .. "-claude-settings.json"
+  vim.fn.writefile({ vim.json.encode({ hooks = hooks }) }, path)
+  return path
+end
+
 ---Start `claude` in a hidden, unlisted terminal buffer (no window).
 local function spawn()
   local buf = vim.api.nvim_create_buf(false, false)
   vim.bo[buf].bufhidden = "hide"
   local cmd = config.options.agent.cmd
+  state.activity = nil
+  if config.options.agent.hooks then
+    cmd = cmd .. " --settings " .. vim.fn.shellescape(write_hook_settings())
+    state.activity = "starting"
+  end
   -- Nvim's terminal renders 24-bit color but doesn't advertise it.
   local opts = { env = { COLORTERM = "truecolor" } }
   local job
@@ -84,7 +124,7 @@ local function spawn()
     once = true,
     callback = function()
       if state.buf == buf then
-        state.buf, state.job, state.win = nil, nil, nil
+        state.buf, state.job, state.win, state.activity = nil, nil, nil, nil
         announce()
       end
       vim.schedule(function()
@@ -224,18 +264,72 @@ function M.stop()
   end
 end
 
----@return { running: boolean, visible: boolean, buf: integer? }
+---@return { running: boolean, visible: boolean, activity: string?, buf: integer? }
 function M.status()
-  return { running = running(), visible = visible(), buf = state.buf }
+  return { running = running(), visible = visible(), activity = state.activity, buf = state.buf }
 end
 
----"agent" while the terminal's process is running, else "".
-function M.status_text()
-  return running() and "agent" or ""
+local function watching()
+  return visible() and vim.api.nvim_get_current_win() == state.win
 end
+
+local function alert(msg, level)
+  local key = toggle_key()
+  vim.notify("neo-review agent: " .. msg .. (key and (" (" .. key .. " to view)") or ""), level)
+end
+
+---Called by claude's hooks (see write_hook_settings) over RPC.
+---@param event "start"|"prompt"|"tool"|"stop"|"permission"|"idle"
+function M._hook(event)
+  if not running() then
+    return 0
+  end
+  local prev = state.activity
+  local next_activity = ({
+    start = "idle",
+    prompt = "working",
+    tool = "working",
+    stop = "idle",
+    permission = "waiting",
+    idle = "idle",
+  })[event]
+  if not next_activity then
+    return 0
+  end
+  state.activity = next_activity
+  if not watching() then
+    if event == "permission" then
+      alert("claude is waiting for your permission", vim.log.levels.WARN)
+    elseif event == "stop" and (prev == "working" or prev == "waiting") then
+      alert("claude finished", vim.log.levels.INFO)
+    end
+  end
+  if prev ~= next_activity then
+    announce()
+  end
+  return 0
+end
+
+---"agent:<activity>" while claude is running (just "agent" with hooks off),
+---else "".
+function M.status_text()
+  if not running() then
+    return ""
+  end
+  return state.activity and ("agent:" .. state.activity) or "agent"
+end
+
+local ICON_HL = {
+  NeoReviewAgentIdle = "DiagnosticOk",
+  NeoReviewAgentWorking = "DiagnosticWarn",
+  NeoReviewAgentWaiting = "DiagnosticError",
+  NeoReviewAgentStarting = "Comment",
+}
 
 local function ensure_icon_hl()
-  vim.api.nvim_set_hl(0, "NeoReviewAgent", { link = "DiagnosticOk", default = true })
+  for group, link in pairs(ICON_HL) do
+    vim.api.nvim_set_hl(0, group, { link = link, default = true })
+  end
 end
 ensure_icon_hl()
 vim.api.nvim_create_autocmd("ColorScheme", {
@@ -243,12 +337,22 @@ vim.api.nvim_create_autocmd("ColorScheme", {
   callback = ensure_icon_hl,
 })
 
+---Colored icon: ⏸ red = waiting for permission, ● orange = working,
+---● green = idle, ○ dim = starting. nil when not running.
 ---@return string? icon, string? hlgroup
 function M.status_icon()
-  if running() then
-    return "●", "NeoReviewAgent"
+  if not running() then
+    return nil, nil
   end
-  return nil, nil
+  local a = state.activity
+  if a == "waiting" then
+    return "⏸", "NeoReviewAgentWaiting"
+  elseif a == "working" then
+    return "●", "NeoReviewAgentWorking"
+  elseif a == "starting" then
+    return "○", "NeoReviewAgentStarting"
+  end
+  return "●", "NeoReviewAgentIdle"
 end
 
 return M

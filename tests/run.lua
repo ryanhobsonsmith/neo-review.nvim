@@ -486,8 +486,8 @@ test("agent terminal: toggle shows a float over a hidden, unlisted terminal and 
     assert(vim.wait(2000, function()
       return #lines("SPAWN") == 1
     end, 20), "stub never started")
-    eq("agent", agent.status_text())
-    eq({ "●", "NeoReviewAgent" }, { agent.status_icon() })
+    eq("agent:starting", agent.status_text(), "hooks on: starting until claude reports in")
+    eq({ "○", "NeoReviewAgentStarting" }, { agent.status_icon() })
 
     agent.toggle() -- focused -> hide
     eq(false, vim.api.nvim_win_is_valid(win))
@@ -575,6 +575,66 @@ test("agent terminal: stop kills the process and its buffer; next toggle starts 
     assert(vim.wait(2000, function()
       return #lines("SPAWN") == 2
     end, 20), "reopen did not spawn a fresh process")
+  end)
+end)
+
+test("agent terminal: claude hooks report activity over $NVIM and alert while hidden", function()
+  with_agent_terminal(function(agent, lines)
+    agent.ping()
+    assert(vim.wait(2000, function()
+      return #lines("ARGS") == 1
+    end, 20), "stub never started")
+    local settings = lines("ARGS")[1]:match("%-%-settings '?([^' ]+)")
+    assert(settings, "claude must get --settings: " .. lines("ARGS")[1])
+    local hooks = vim.json.decode(table.concat(vim.fn.readfile(settings), "\n")).hooks
+    local function command(event, matcher)
+      for _, h in ipairs(hooks[event] or {}) do
+        if h.matcher == matcher then
+          return h.hooks[1].command
+        end
+      end
+      error("no " .. event .. " hook for matcher " .. tostring(matcher))
+    end
+
+    local notes = {}
+    local orig_notify = vim.notify
+    vim.notify = function(msg, level)
+      notes[#notes + 1] = { msg = msg, level = level }
+    end
+    local addr = vim.fn.serverstart()
+    local function fire(event, matcher, want)
+      vim.system({ "sh", "-c", command(event, matcher) }, { env = { NVIM = addr } })
+      assert(vim.wait(3000, function()
+        return agent.status().activity == want
+      end, 20), event .. " should set activity " .. want .. ", got " .. tostring(agent.status().activity))
+    end
+    local ok, err = pcall(function()
+      fire("SessionStart", nil, "idle")
+      fire("UserPromptSubmit", nil, "working")
+      eq({ "●", "NeoReviewAgentWorking" }, { agent.status_icon() })
+      fire("Notification", "permission_prompt", "waiting")
+      eq("agent:waiting", agent.status_text())
+      eq({ "⏸", "NeoReviewAgentWaiting" }, { agent.status_icon() })
+      fire("PostToolUse", "*", "working")
+      fire("Stop", nil, "idle")
+    end)
+    vim.notify = orig_notify
+    vim.fn.serverstop(addr)
+    assert(ok, err)
+
+    local msgs = vim.tbl_map(function(n)
+      return n.msg
+    end, notes)
+    local function has(pat, level)
+      for _, n in ipairs(notes) do
+        if n.msg:find(pat, 1, true) and n.level == level then
+          return true
+        end
+      end
+      return false
+    end
+    assert(has("waiting for your permission", vim.log.levels.WARN), "permission alert missing: " .. vim.inspect(msgs))
+    assert(has("claude finished", vim.log.levels.INFO), "finished alert missing: " .. vim.inspect(msgs))
   end)
 end)
 

@@ -45,8 +45,12 @@ M.defaults = {
     notify_new = true,
   },
   agent = {
-    -- Command run in the agent terminal (:terminal <cmd>).
-    cmd = "claude",
+    -- Command run in the agent terminal. Must accept claude's flags (a
+    -- wrapper should pass "$@" through): hooks add `--settings <file>`.
+    cmd = "claude --permission-mode auto",
+    -- Report claude's activity (idle/working/waiting for permission) back to
+    -- Neovim via claude hooks: statusline icon + alerts while it's hidden.
+    hooks = true,
     -- How long a freshly started claude gets to boot before a ping is typed
     -- into it.
     ready_delay_ms = 1500,

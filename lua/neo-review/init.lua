@@ -696,15 +696,15 @@ function M.file_hunks(relpath)
   return diff.hunks(baseline.file_text(session.root, relpath), lines), lines
 end
 
----Statusline component: "agent" while the agent terminal's claude is
----running, else "". User NeoReviewAgentStateChanged (data: running) fires on
----start/exit — native-statusline users can redrawstatus on it.
+---Statusline component: "agent:idle|working|waiting|starting" while the agent
+---terminal's claude is running, else "". User NeoReviewAgentStateChanged
+---(data: running, activity) fires on every change.
 function M.statusline()
   return require("neo-review.agent").status_text()
 end
 
----Compact icon for a native 'statusline' ("%#NeoReviewAgent#●%*" while the
----agent terminal is running, else "").
+---Compact icon for a native 'statusline' ("%#NeoReviewAgentWorking#●%*"-style,
+---"" when the agent terminal isn't running).
 function M.statusline_icon()
   local icon, hl = require("neo-review.agent").status_icon()
   if not icon then
