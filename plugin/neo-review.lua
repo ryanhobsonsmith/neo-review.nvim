@@ -100,107 +100,20 @@ vim.api.nvim_create_user_command("NeoReviewExplorerExpand", function()
   require("neo-review.integrations.snacks_explorer").expand_changed()
 end, { desc = "Expand snacks explorer to reveal all changed files" })
 
-vim.api.nvim_create_user_command("NeoReviewAgentStart", function(cmd)
+vim.api.nvim_create_user_command("NeoReviewAgentOpen", function()
   review()
-  require("neo-review.agent").start({ resume = cmd.args == "--resume" })
-end, {
-  nargs = "?",
-  complete = function()
-    return { "--resume" }
-  end,
-  desc = "Start the wrapped agent session (--resume continues the last one)",
-})
-
-vim.api.nvim_create_user_command("NeoReviewAgentStop", function()
-  require("neo-review.agent").stop()
-end, { desc = "Stop the wrapped agent session" })
+  require("neo-review.agent").toggle()
+end, { desc = "Open/toggle the agent terminal (interactive claude)" })
 
 vim.api.nvim_create_user_command("NeoReviewAgentPing", function()
   review()
   require("neo-review.agent").ping()
-end, { desc = "Alert the wrapped agent about open comment threads" })
+end, { desc = "Type a prompt about open comment threads into the agent terminal" })
 
-vim.api.nvim_create_user_command("NeoReviewAgentInterrupt", function()
-  require("neo-review.agent").interrupt()
-end, { desc = "Interrupt the agent's in-flight turn" })
-
-vim.api.nvim_create_user_command("NeoReviewAgentFork", function()
-  review()
-  require("neo-review.agent").fork()
-end, { desc = "Open the real Claude Code TUI on a fork of the wrapped session" })
-
-vim.api.nvim_create_user_command("NeoReviewAgentMode", function(cmd)
-  review()
-  local agent = require("neo-review.agent")
-  if cmd.args ~= "" then
-    agent.set_mode(cmd.args)
-  else
-    agent.pick_mode()
-  end
-end, {
-  nargs = "?",
-  complete = function()
-    return vim.tbl_map(function(m)
-      return m.mode
-    end, require("neo-review.agent").MODES)
-  end,
-  desc = "Show/set the agent permission mode (claude-style; persisted per repo)",
-})
-
-vim.api.nvim_create_user_command("NeoReviewAgentProfile", function(cmd)
-  review()
-  local agent = require("neo-review.agent")
-  if cmd.args ~= "" then
-    agent.set_profile(cmd.args)
-  else
-    agent.pick_profile()
-  end
-end, {
-  nargs = "?",
-  complete = function()
-    -- config.options defaults to a copy of the defaults pre-setup()
-    local names = vim.tbl_keys(require("neo-review.config").options.agent.profiles or {})
-    table.sort(names)
-    names[#names + 1] = "none"
-    return names
-  end,
-  desc = "Show/set the agent profile (model + permission mode preset; persisted per repo)",
-})
-
-vim.api.nvim_create_user_command("NeoReviewAgentModel", function(cmd)
-  review()
-  require("neo-review.agent").set_model(cmd.args ~= "" and cmd.args or nil)
-end, {
-  nargs = "?",
-  complete = function()
-    return { "sonnet", "opus", "haiku", "default" }
-  end,
-  desc = "Set the agent model for this repo (no arg / 'default' clears the override)",
-})
-
-vim.api.nvim_create_user_command("NeoReviewAgentPermission", function()
-  require("neo-review.agent").review_permission()
-end, { desc = "Review the pending agent permission request" })
-
-vim.api.nvim_create_user_command("NeoReviewAgentStatus", function()
-  require("neo-review.agent").show_status()
-end, { desc = "Show wrapped agent session status" })
-
-vim.api.nvim_create_user_command("NeoReviewAgentLog", function()
-  require("neo-review.agent.log").toggle()
-end, { desc = "Toggle a live read-only view of the agent's activity (turns, tool calls, permissions, stderr)" })
+vim.api.nvim_create_user_command("NeoReviewAgentStop", function()
+  require("neo-review.agent").stop()
+end, { desc = "Stop the agent terminal's claude process" })
 
 vim.api.nvim_create_user_command("NeoReviewSkillInstall", function()
   require("neo-review.skill").install()
 end, { desc = "Symlink the neo-review and guided-review skills into ~/.claude/skills for external Claude Code sessions" })
-
-vim.api.nvim_create_user_command("NeoReviewAgentSandbox", function(cmd)
-  review()
-  require("neo-review.agent").sandbox_cmd(cmd.args)
-end, {
-  nargs = "?",
-  complete = function()
-    return { "on", "off" }
-  end,
-  desc = "Agent sandbox (sbx microVM): status / on / off (per repo)",
-})

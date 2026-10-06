@@ -433,350 +433,138 @@ test("anchor: context fallback when snippet neighbors changed", function()
   eq(2, anchor.resolve(a, { "top", "  mid", "  TAIL-EDITED", "bottom" }))
 end)
 
----------------------------------------------------------------- agent transport (against fake-claude.sh)
+---------------------------------------------------------------- agent terminal (against stub-claude.sh)
 
-test("agent transport: init, turn queue, permission round-trip, results", function()
-  local fake = root .. "/tests/fake-claude.sh"
-  vim.uv.fs_chmod(fake, 493) -- 0755
-  local transport = require("neo-review.agent.claude")
-
-  local events = { states = {}, results = {}, permissions = {} }
-  local ok, err = transport.start({
-    cwd = root,
-    cmd = fake,
-    handlers = {
-      state = function(s)
-        events.states[#events.states + 1] = s
-      end,
-      permission = function(req)
-        events.permissions[#events.permissions + 1] = req
-        transport.respond_permission(req.request_id, true, req.input)
-      end,
-      result = function(ev)
-        events.results[#events.results + 1] = ev.result
-      end,
-    },
-  })
-  assert(ok, err)
-
-  -- send both turns immediately: first goes out on init, second queues
-  transport.send("turn one")
-  transport.send("turn two")
-
-  assert(vim.wait(5000, function()
-    return #events.results == 2
-  end, 20), "timed out waiting for two results: " .. vim.inspect(events))
-
-  eq({ "done", "second" }, events.results)
-  eq(1, #events.permissions)
-  eq("Write", events.permissions[1].tool_name)
-  eq("req-1", events.permissions[1].request_id)
-  eq("fake-session-1234", transport.status().session_id)
-  eq("idle", transport.status().state)
-  -- lifecycle: starting -> idle (init) -> working -> idle -> working -> idle
-  eq("starting", events.states[1])
-  eq("idle", events.states[#events.states])
-
-  transport.stop()
-  assert(vim.wait(3000, function()
-    return transport.status().state == "stopped"
-  end, 20), "transport did not stop")
-end)
-
----------------------------------------------------------------- agent controller: permission inbox (A)
-
-test("agent controller: permission lands in inbox, never auto-answers; explicit respond flows", function()
-  local fake = root .. "/tests/fake-claude.sh"
-  vim.uv.fs_chmod(fake, 493)
-
-  -- isolated temp repo so review state stays out of the plugin repo
+local function with_agent_terminal(fn)
+  local stub = root .. "/tests/stub-claude.sh"
+  vim.uv.fs_chmod(stub, 493)
+  local log = vim.fn.tempname()
   local repo = vim.fn.tempname()
   vim.fn.mkdir(repo, "p")
-  local function sh2(cmd)
-    assert(vim.system(cmd, { cwd = repo, text = true }):wait().code == 0)
-  end
-  sh2({ "git", "init", "-q", "-b", "main" })
-  sh2({ "git", "config", "user.email", "t@t" })
-  sh2({ "git", "config", "user.name", "t" })
-  vim.fn.writefile({ "x" }, repo .. "/f.txt")
-  sh2({ "git", "add", "." })
-  sh2({ "git", "commit", "-q", "-m", "init" })
-
-  require("neo-review.config").setup({
-    keymaps = false,
-    -- sandbox off: this test must exercise the fake binary directly, never
-    -- docker (which may exist and have the image on a dev machine)
-    agent = { cmd = fake, auto_allow_tools = {}, sandbox = { enabled = false } },
-  })
-  vim.cmd.cd(repo)
-  vim.cmd.edit(repo .. "/f.txt")
-  require("neo-review").enable()
-
-  local agent = require("neo-review.agent")
-  agent.start()
-  assert(vim.wait(3000, function()
-    return agent.status().state ~= "stopped"
-  end, 20), "agent did not start")
-
-  require("neo-review.agent.claude").send("turn one")
-  assert(vim.wait(5000, function()
-    return agent.pending_count() == 1
-  end, 20), "permission never landed in inbox")
-  -- inbox semantics: request is parked, agent still working, no auto-answer
-  eq("working", agent.status().state)
-  assert(agent.status_text():find("⏸1", 1, true), "status_text missing pending marker: " .. agent.status_text())
-
-  assert(agent.respond_pending("once"))
-  assert(vim.wait(5000, function()
-    return agent.status().state == "idle"
-  end, 20), "no result after allow")
-  eq(0, agent.pending_count())
-
-  agent.stop()
-  vim.wait(2000, function()
-    return agent.status().state == "stopped"
-  end, 20)
-  require("neo-review").disable()
-  vim.cmd.cd(root)
-  require("neo-review.config").setup({})
-  vim.fn.delete(repo, "rf")
-end)
-
----------------------------------------------------------------- agent profiles/model: precedence + persistence (offline)
-
-test("agent profiles: precedence, override clearing, persistence", function()
-  local repo = vim.fn.tempname()
-  vim.fn.mkdir(repo, "p")
-  local function shp(cmd)
-    assert(vim.system(cmd, { cwd = repo, text = true }):wait().code == 0)
-  end
-  shp({ "git", "init", "-q", "-b", "main" })
-  shp({ "git", "config", "user.email", "t@t" })
-  shp({ "git", "config", "user.name", "t" })
-  vim.fn.writefile({ "x" }, repo .. "/f.txt")
-  shp({ "git", "add", "." })
-  shp({ "git", "commit", "-q", "-m", "init" })
-
-  require("neo-review.config").setup({
-    keymaps = false,
-    agent = {
-      sandbox = { enabled = false },
-      profiles = { deep = { model = "opus", permission_mode = "plan" } },
-    },
-  })
-  vim.cmd.cd(repo)
-  vim.cmd.edit(repo .. "/f.txt")
-  require("neo-review").enable()
-  local agent = require("neo-review.agent")
-
-  -- baseline: nothing persisted -> config defaults
-  eq("default", agent.mode())
-  eq(nil, agent.model())
-  eq(nil, (agent.profile()))
-
-  agent.set_profile("deep")
-  eq("deep", (agent.profile()))
-  eq("plan", agent.mode())
-  eq("opus", agent.model())
-
-  -- explicit per-field overrides beat the profile
-  agent.set_mode("acceptEdits")
-  eq("acceptEdits", agent.mode())
-  eq("opus", agent.model(), "mode override must not disturb the profile's model")
-  agent.set_model("haiku")
-  eq("haiku", agent.model())
-
-  -- re-selecting a profile clears the ad-hoc overrides
-  agent.set_profile("deep")
-  eq("plan", agent.mode())
-  eq("opus", agent.model())
-
-  -- persisted on disk (agent.json is the source of truth across restarts)
-  local disk = vim.json.decode(table.concat(vim.fn.readfile(repo .. "/.review/local/agent.json"), "\n"))
-  eq("deep", disk.profile)
-  eq(nil, disk.permission_mode, "override keys must be DELETED, not null")
-  eq(nil, disk.model)
-
-  -- invalid profile rejected, state unchanged; "none" clears everything
-  agent.set_profile("nope")
-  eq("deep", (agent.profile()))
-  agent.set_profile("none")
-  eq(nil, (agent.profile()))
-  eq("default", agent.mode())
-  eq(nil, agent.model())
-
-  require("neo-review").disable()
-  vim.cmd.cd(root)
-  require("neo-review.config").setup({})
-  agent._invalidate_state_cache()
-  vim.fn.delete(repo, "rf")
-end)
-
----------------------------------------------------------------- agent events + statusline (against fake-claude.sh)
-
-test("agent: User NeoReviewAgentStateChanged events + statusline component", function()
-  local fake = root .. "/tests/fake-claude.sh"
-  vim.uv.fs_chmod(fake, 493)
-
-  local repo = vim.fn.tempname()
-  vim.fn.mkdir(repo, "p")
-  local function she(cmd)
-    assert(vim.system(cmd, { cwd = repo, text = true }):wait().code == 0)
-  end
-  she({ "git", "init", "-q", "-b", "main" })
-  she({ "git", "config", "user.email", "t@t" })
-  she({ "git", "config", "user.name", "t" })
-  vim.fn.writefile({ "x" }, repo .. "/f.txt")
-  she({ "git", "add", "." })
-  she({ "git", "commit", "-q", "-m", "init" })
-
-  require("neo-review.config").setup({
-    keymaps = false,
-    agent = { cmd = fake, auto_allow_tools = {}, sandbox = { enabled = false } },
-  })
-  vim.cmd.cd(repo)
-  vim.cmd.edit(repo .. "/f.txt")
-  require("neo-review").enable()
-
-  local datas = {}
-  local auid = vim.api.nvim_create_autocmd("User", {
-    pattern = "NeoReviewAgentStateChanged",
-    callback = function(ev)
-      datas[#datas + 1] = ev.data
-    end,
-  })
-
-  local agent = require("neo-review.agent")
-  agent.start()
-  require("neo-review.agent.claude").send("turn one")
-  assert(vim.wait(5000, function()
-    return agent.pending_count() == 1
-  end, 20), "permission never landed in inbox")
-
-  local seen_pending = false
-  for _, d in ipairs(datas) do
-    seen_pending = seen_pending or (d.state == "working" and d.pending == 1)
-  end
-  assert(seen_pending, "no event with state=working, pending=1: " .. vim.inspect(datas))
-  local sl = require("neo-review").statusline()
-  assert(sl:find("agent:working", 1, true), "statusline missing state: " .. sl)
-  assert(sl:find("⏸1", 1, true), "statusline missing pending marker: " .. sl)
-
-  -- color-coded icon: pending approvals win, red
-  local icon, hl = agent.status_icon()
-  eq("⏸1", icon)
-  eq("NeoReviewAgentPending", hl)
-  eq("%#NeoReviewAgentPending#⏸1%*", require("neo-review").statusline_icon())
-
-  agent.respond_pending("once")
-  assert(vim.wait(5000, function()
-    return agent.status().state == "idle"
-  end, 20), "no idle after allow")
-  agent.stop()
-  assert(vim.wait(3000, function()
-    return agent.status().state == "stopped"
-  end, 20), "agent did not stop")
-  eq("stopped", datas[#datas].state, "stop must be announced")
-  eq("", require("neo-review").statusline(), "statusline must be empty when stopped")
-  eq(nil, (agent.status_icon()), "icon must be hidden when stopped")
-  eq("", require("neo-review").statusline_icon())
-
-  -- activity log captured the whole lifecycle
-  local logged = table.concat(require("neo-review.agent.log").lines(), "\n")
-  assert(logged:find("session ready: fake-model", 1, true), logged)
-  assert(logged:find("⏸ permission requested: Write  x.txt", 1, true), logged)
-  assert(logged:find("✓ allowed Write (once)", 1, true), logged)
-  assert(logged:find("  done", 1, true), "assistant text missing from log: " .. logged)
-  assert(logged:find("■ turn done", 1, true), logged)
-  assert(logged:find("── process exited", 1, true), logged)
-
-  vim.api.nvim_del_autocmd(auid)
-  require("neo-review").disable()
-  vim.cmd.cd(root)
-  require("neo-review.config").setup({})
-  agent._invalidate_state_cache()
-  vim.fn.delete(repo, "rf")
-end)
-
----------------------------------------------------------------- fork command: persisted sandboxed flag (offline)
-
-test("agent fork_cmd: consults the persisted sandboxed flag", function()
-  local repo = vim.fn.tempname()
-  vim.fn.mkdir(repo, "p")
-  local sess = require("neo-review.session")
-  local prev_root, prev_enabled = sess.root, sess.enabled
-  sess.root, sess.enabled = repo, true
-  require("neo-review.config").setup({ keymaps = false })
-  local agent = require("neo-review.agent")
-
-  vim.fn.mkdir(repo .. "/.review/local", "p")
-  vim.fn.writefile({ vim.json.encode({ last_session_id = "sess-1", sandboxed = false }) }, repo .. "/.review/local/agent.json")
-  agent._invalidate_state_cache()
-  local cmd = agent.fork_cmd()
-  assert(cmd:find("claude --resume 'sess-1' --fork-session", 1, true), cmd)
-  assert(not cmd:find("sbx", 1, true), "direct session must not fork through sbx: " .. cmd)
-
-  -- sandboxed last session, sbx unavailable -> host fallback WITH a warning
-  vim.fn.writefile({ vim.json.encode({ last_session_id = "sess-1", sandboxed = true }) }, repo .. "/.review/local/agent.json")
-  agent._invalidate_state_cache()
-  local prev_executable = vim.fn.executable
-  vim.fn.executable = function(name)
-    if name == "sbx" then
-      return 0
-    end
-    return prev_executable(name)
-  end
-  local notes = {}
-  local prev_notify = vim.notify
-  vim.notify = function(msg, level)
-    notes[#notes + 1] = { msg = msg, level = level }
-  end
-  cmd = agent.fork_cmd()
-  vim.fn.executable = prev_executable
-  vim.notify = prev_notify
-  assert(cmd:find("claude --resume 'sess-1' --fork-session", 1, true), cmd)
-  local warned = false
-  for _, n in ipairs(notes) do
-    warned = warned or (n.msg:find("transcript lives in the sbx sandbox", 1, true) ~= nil and n.level == vim.log.levels.WARN)
-  end
-  assert(warned, "expected a sandbox-unavailable warning: " .. vim.inspect(notes))
-
-  sess.root, sess.enabled = prev_root, prev_enabled
-  require("neo-review.config").setup({})
-  agent._invalidate_state_cache()
-  vim.fn.delete(repo, "rf")
-end)
-
----------------------------------------------------------------- sandbox argv builder (offline)
-
-test("sandbox: sbx argv, per-project name, and custom overrides", function()
   local sess = require("neo-review.session")
   local prev_root = sess.root
-  sess.root = "/repo/x"
-  require("neo-review.config").setup({})
-  local sandbox = require("neo-review.agent.sandbox")
-  eq("claude-x", sandbox.sandbox_name())
-  eq("claude-y", sandbox.sandbox_name("/other/y"))
-  eq({ "sbx", "exec", "-i", "claude-x", "claude" }, sandbox.argv_prefix())
-
-  -- custom argv_prefix override replaces the sbx prefix entirely
-  require("neo-review.config").setup({ agent = { sandbox = { argv_prefix = { "asb", "run", "claude" } } } })
-  eq({ "asb", "run", "claude" }, require("neo-review.agent.sandbox").argv_prefix())
-
-  -- function form: computed per repo root (e.g. per-project sbx sandbox)
+  sess.root = repo
   require("neo-review.config").setup({
-    agent = {
-      sandbox = {
-        argv_prefix = function(ctx)
-          return { "sbx", "exec", "-i", "claude-" .. vim.fn.fnamemodify(ctx.root, ":t"), "claude" }
-        end,
-      },
-    },
+    keymaps = false,
+    agent = { cmd = vim.fn.shellescape(stub) .. " " .. vim.fn.shellescape(log), ready_delay_ms = 0 },
   })
-  eq({ "sbx", "exec", "-i", "claude-x", "claude" }, require("neo-review.agent.sandbox").argv_prefix())
-
+  local agent = require("neo-review.agent")
+  local function lines(prefix)
+    local out = {}
+    for _, l in ipairs(vim.fn.filereadable(log) == 1 and vim.fn.readfile(log) or {}) do
+      if vim.startswith(l, prefix) then
+        out[#out + 1] = l
+      end
+    end
+    return out
+  end
+  local ok, err = pcall(fn, agent, lines, repo)
+  agent.stop()
+  vim.wait(2000, function()
+    return agent.status().buf == nil -- TermClose handled
+  end, 20)
+  vim.cmd("silent! only")
   sess.root = prev_root
   require("neo-review.config").setup({})
+  vim.fn.delete(repo, "rf")
+  vim.fn.delete(log)
+  assert(ok, err)
+end
+
+test("agent terminal: toggle spawns, hides without killing, re-shows the same session", function()
+  with_agent_terminal(function(agent, lines)
+    eq("", agent.status_text())
+    eq(nil, (agent.status_icon()))
+
+    agent.toggle()
+    local buf = vim.api.nvim_get_current_buf()
+    eq("terminal", vim.bo[buf].buftype)
+    assert(agent.status().running, "job should be running")
+    assert(vim.wait(2000, function()
+      return #lines("SPAWN") == 1
+    end, 20), "stub never started")
+    eq("agent", agent.status_text())
+    eq({ "●", "NeoReviewAgent" }, { agent.status_icon() })
+
+    local wins = #vim.api.nvim_tabpage_list_wins(0)
+    agent.toggle() -- focused -> hide
+    eq(wins - 1, #vim.api.nvim_tabpage_list_wins(0))
+    assert(vim.api.nvim_buf_is_valid(buf), "hiding must keep the buffer")
+    assert(agent.status().running, "hiding must keep the job")
+
+    agent.toggle() -- hidden -> show the same buffer
+    eq(buf, vim.api.nvim_get_current_buf())
+    vim.wait(200)
+    eq(1, #lines("SPAWN"), "must not respawn")
+
+    vim.cmd("wincmd p")
+    agent.toggle() -- visible but unfocused -> focus, no new window
+    eq(buf, vim.api.nvim_get_current_buf())
+    eq(wins, #vim.api.nvim_tabpage_list_wins(0))
+  end)
+end)
+
+test("agent terminal: ping auto-starts and types a one-line prompt of open threads", function()
+  with_agent_terminal(function(agent, lines, repo)
+    local function mk(file, body)
+      return store.create(repo, {
+        file = file,
+        kind = "question",
+        anchor = { line = 2, snippet = { "x" }, context_before = {}, context_after = {} },
+        author = "ryan",
+        role = "human",
+        body = { body },
+      })
+    end
+    local open_id = mk("src/open.lua", "why 30s?")
+    local done_id = mk("src/done.lua", "settled")
+    store.set_status(repo, done_id, "resolved", "ryan")
+
+    agent.ping()
+    assert(vim.wait(3000, function()
+      return #lines("RECV") == 1
+    end, 20), "prompt never arrived: " .. vim.inspect(lines("")))
+    eq(1, #lines("SPAWN"))
+    local recv = lines("RECV")[1]
+    assert(recv:find(open_id, 1, true), "open thread missing: " .. recv)
+    assert(recv:find("src/open.lua:2", 1, true), "location missing: " .. recv)
+    assert(not recv:find(done_id, 1, true), "resolved thread leaked: " .. recv)
+
+    agent.ping() -- already running: sends immediately, no respawn
+    assert(vim.wait(2000, function()
+      return #lines("RECV") == 2
+    end, 20), "second ping never arrived")
+    eq(1, #lines("SPAWN"))
+  end)
+end)
+
+test("agent terminal: stop kills the process; next open starts fresh", function()
+  with_agent_terminal(function(agent, lines)
+    local events = {}
+    local au = vim.api.nvim_create_autocmd("User", {
+      pattern = "NeoReviewAgentStateChanged",
+      callback = function(ev)
+        events[#events + 1] = ev.data.running
+      end,
+    })
+    agent.open()
+    assert(vim.wait(2000, function()
+      return #lines("SPAWN") == 1
+    end, 20))
+    agent.stop()
+    assert(vim.wait(2000, function()
+      return not agent.status().running and #events == 2
+    end, 20), "stop did not end the job: " .. vim.inspect(events))
+    eq({ true, false }, events)
+    eq("", agent.status_text())
+    vim.api.nvim_del_autocmd(au)
+
+    vim.cmd("silent! only")
+    agent.open()
+    assert(vim.wait(2000, function()
+      return #lines("SPAWN") == 2
+    end, 20), "reopen did not spawn a fresh process")
+  end)
 end)
 
 test("skill: auto_install on setup links missing skills and repairs dangling ones, not stale ones", function()
@@ -920,7 +708,7 @@ test("attach: buffer reload (external edit + :edit) re-attaches and re-renders",
   shr({ "git", "commit", "-q", "-m", "init" })
   vim.fn.writefile({ "one", "CHANGED", "three" }, repo .. "/f.txt")
 
-  require("neo-review.config").setup({ keymaps = false, agent = { sandbox = { enabled = false } } })
+  require("neo-review.config").setup({ keymaps = false })
   vim.cmd.cd(repo)
   vim.cmd.edit(repo .. "/f.txt")
   local buf = vim.api.nvim_get_current_buf()
@@ -969,7 +757,7 @@ test("review-progress: file marking, !! statuses, content invalidation, skip-nav
   vim.fn.writefile({ "A", "b", "c", "d", "E" }, repo .. "/f1.txt") -- two hunks
   vim.fn.writefile({ "x", "Y" }, repo .. "/f2.txt") -- one hunk
 
-  require("neo-review.config").setup({ keymaps = false, agent = { sandbox = { enabled = false } } })
+  require("neo-review.config").setup({ keymaps = false })
   vim.cmd.cd(repo)
   vim.cmd.edit(repo .. "/f1.txt")
   local review = require("neo-review")
@@ -1053,7 +841,7 @@ test("mark_tree_reviewed: folder toggle marks/unmarks everything under it", func
   vim.fn.writefile({ "B" }, repo .. "/sub/one.txt")
   vim.fn.writefile({ "C" }, repo .. "/sub/two.txt")
 
-  require("neo-review.config").setup({ keymaps = false, agent = { sandbox = { enabled = false } } })
+  require("neo-review.config").setup({ keymaps = false })
   vim.cmd.cd(repo)
   vim.cmd.edit(repo .. "/top.txt")
   local review = require("neo-review")
@@ -1214,7 +1002,7 @@ test("series nav: ]r walks stops incl. resolved, ]c skips them, pane follows, dr
   local abuf = vim.api.nvim_get_current_buf()
   vim.keymap.set("n", "]c", "<Nop>", { buffer = abuf, desc = "foreign class jump" })
 
-  require("neo-review.config").setup({ agent = { sandbox = { enabled = false } } })
+  require("neo-review.config").setup({})
   local review = require("neo-review")
   local nav = require("neo-review.nav")
   local ui = require("neo-review.threads.ui")

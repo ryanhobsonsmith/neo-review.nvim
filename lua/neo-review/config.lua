@@ -45,39 +45,11 @@ M.defaults = {
     notify_new = true,
   },
   agent = {
+    -- Command run in the agent terminal (:terminal <cmd>).
     cmd = "claude",
-    model = nil, -- nil = the CLI's default model
-    -- Default permission mode; per-repo override via :NeoReviewAgentMode
-    -- ("default" | "acceptEdits" | "plan" | "bypassPermissions" — the last
-    -- only makes sense inside a sandbox).
-    permission_mode = "default",
-    -- Named presets bundling model + permission mode (+ optional sandbox
-    -- override). Select with :NeoReviewAgentProfile (persisted per repo).
-    -- Precedence: explicit :NeoReviewAgentMode/:NeoReviewAgentModel/
-    -- :NeoReviewAgentSandbox choices beat the profile; the profile beats
-    -- agent.model/agent.permission_mode below.
-    profiles = {
-      review = { model = "sonnet", permission_mode = "auto" },
-      deep = { model = "opus", permission_mode = "plan" },
-    },
-    -- Tools approved without entering the permission inbox. Curated safe
-    -- baseline: read-only inspection + the agent's own todo bookkeeping.
-    -- File WRITES are governed by permission_mode (acceptEdits), not this.
-    auto_allow_tools = { "Read", "Glob", "Grep", "LSP", "TodoWrite", "WebFetch" },
-    sandbox = {
-      -- The wrapped session runs inside a Docker Sandboxes (sbx) microVM —
-      -- per-project persistent sandbox, deny-by-default egress filtered by
-      -- domain name (`sbx policy`), proxy-injected credentials. When
-      -- enabled (the default) and sbx is unavailable, starting the agent
-      -- FAILS with instructions; there is no fallback sandbox. Direct
-      -- unsandboxed execution is the explicit :NeoReviewAgentSandbox off
-      -- choice (per repo).
-      enabled = true,
-      -- Replace the `sbx exec -i <name> claude` prefix with your own
-      -- wrapper: a list, or function({ root = <repo root> }) -> list. Must
-      -- end with the claude binary (the transport appends its flags).
-      argv_prefix = nil,
-    },
+    -- How long a freshly started claude gets to boot before a ping is typed
+    -- into it.
+    ready_delay_ms = 1500,
   },
   integrations = {
     -- While review mode is on with a non-default baseline, the snacks
@@ -104,8 +76,8 @@ M.defaults = {
     explorer_filter = nil, -- changed-only filter alone (:NeoReviewExplorerFilter); no default key
     explorer_expand = "<leader>rE", -- snacks explorer: expand tree to reveal all changed files
     explorer_review = "<leader>rv", -- IN the explorer list: toggle reviewed for the file/folder under the cursor (buffer-local while review is on)
-    agent_ping = "<leader>ra", -- alert the wrapped agent session about open threads
-    agent_permission = "<leader>rp", -- review the pending permission request(s)
+    agent_open = "<leader>ro", -- open/toggle the agent terminal (interactive claude)
+    agent_ping = "<leader>ra", -- type a prompt about open threads into the agent terminal
 
     next_comment = "]c", -- next open comment, by file then line
     prev_comment = "[c",

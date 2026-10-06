@@ -7,130 +7,35 @@ only — it never mutates your files.
 
 Three ways to work with it: pure human review (overlay + hunks +
 reviewed-state), collaboration with any external Claude Code session through
-persisted comment threads, or a wrapped agent session the editor owns.
+persisted comment threads, or an agent terminal the editor opens and pings
+for you.
 
-## Wrapped agent session
+## Agent terminal
 
-Each Neovim instance can own one Claude Code session, wrapped as a
-long-lived `claude -p --input-format stream-json` subprocess (subscription-
-billed; `ANTHROPIC_API_KEY` is scrubbed from the child env). Thread-driven —
-no chat surface: `<leader>ra` / `:NeoReviewAgentPing` alerts the session about
-open comment threads; it replies/resolves through `.review/threads/` files
-and the editor renders them live. **Permissions are an inbox, not a popup**: a request never opens UI on
-arrival — the winbar shows `agent:working ⏸1`, a passive notification
-fires, and the agent waits. `<leader>rp` reviews it deliberately in a float
-(full command/file content shown) where only explicit keys answer: `y`
-allow once, `Y` allow that tool for the session, `n` deny — closing the
-float leaves it pending; cancel can never deny. Prompt volume stays low
-via a curated read-only `agent.auto_allow_tools` baseline and a
-claude-style permission mode: `:NeoReviewAgentMode` (picker showing current)
-or `:NeoReviewAgentMode acceptEdits|plan|default|bypassPermissions`,
-persisted per repo; a running session restarts in place via `--resume`.
-`:NeoReviewAgentStatus` shows state/profile/model/mode/session/queue/pending.
-`:NeoReviewAgentStart [--resume]`, `:NeoReviewAgentStop`,
-`:NeoReviewAgentInterrupt`, and `:NeoReviewAgentFork` (opens the real TUI on a
-`--fork-session` of the wrapped session in a terminal split — `sbx exec -it`
-into the sandbox when sandboxed; whether the last session was sandboxed is
-persisted per repo, so forking works across Neovim restarts). Agent state
-shows in the review winbar (`[review:auto⛨]` = review profile, auto mode,
-sandboxed). The wire protocol is
-unofficial — verified against claude 2.1.234; protocol notes live in
-`lua/neo-review/agent/claude.lua`, and `:checkhealth neo-review` reports on it.
-
-`:NeoReviewAgentLog` toggles a live, read-only split tailing everything the
-session does — turns sent, assistant text, tool calls with a one-line input
-summary (`→ Bash  $ npm test`), tool results, permission requests/answers,
-per-turn cost, and stderr — the place to look when the agent seems to hang.
-Windows parked at the bottom follow new output; scroll up and they stay put.
-The log is a scratch buffer (`review://agent-log`, capped at 2000 lines), so
-it keeps collecting in the background whether or not it's visible.
-
-### Profiles (model + mode presets)
-
-`agent.profiles` names presets bundling a model, a permission mode, and
-optionally a sandbox override; switch with `:NeoReviewAgentProfile` (picker
-showing current) or `:NeoReviewAgentProfile deep|none`, persisted per repo.
-`:NeoReviewAgentModel opus|haiku|<full id>|default` sets an ad-hoc model
-override the same way. Defaults:
+`<leader>ro` / `:NeoReviewAgentOpen` opens a dedicated `:terminal` split
+running plain interactive `claude`, the same TUI you'd run yourself. It
+toggles: if the terminal is hidden, the key shows it; if it's visible, the key
+jumps to it; if you're already in it, the key hides it. Hiding leaves the
+session running. `<leader>ra` / `:NeoReviewAgentPing` starts the terminal if
+needed. It then types a one-line prompt listing the open comment threads
+(pointing at `.review/SKILL.md`) and presses Enter, as if you had typed it.
+`:NeoReviewAgentStop` ends the process. Everything else happens in the TUI
+itself: `/neo-review`, `/guided-review`, permissions, `/model`. To see what the
+agent is doing, look at the terminal.
 
 ```lua
 agent = {
-  profiles = {
-    review = { model = "sonnet", permission_mode = "auto" },
-    deep = { model = "opus", permission_mode = "plan" },
-    -- yours: yolo = { model = "opus", permission_mode = "bypassPermissions", sandbox = true },
-  },
+  cmd = "claude",        -- what runs in the terminal (add flags or use a wrapper)
+  ready_delay_ms = 1500, -- boot time a fresh claude gets before a ping is typed
 },
 ```
 
-Precedence, last explicit action wins: an explicit
-`:NeoReviewAgentMode`/`:NeoReviewAgentModel`/`:NeoReviewAgentSandbox` choice
-beats the active profile; the profile beats `agent.model` /
-`agent.permission_mode` from `setup()`; selecting a profile clears earlier
-ad-hoc overrides. A running session restarts in place onto the same
-conversation via `--resume` — except when the change flips the sandbox
-on/off, which starts a fresh session (transcripts don't cross the sandbox
-boundary).
-
-### Statusline
-
-The review winbar only renders on review-attached buffers; for an always-on
-indicator use the statusline component — returns `""` while the agent is
-stopped, else e.g. `agent:working ⏸1 [review:auto⛨]`:
-
-```lua
--- lualine
-lualine_x = {
-  { function() return require("neo-review").statusline() end },
-},
-```
-
-If the full string is too noisy, there's a compact color-coded icon:
-`⏸N` red = pending approvals, `●` orange = working, `●` green = idle,
-`○` dim = starting, hidden when stopped (colors via the `NeoReviewAgent*`
-highlight groups, linked to the diagnostic palette by default):
-
-```lua
--- lualine: ready-made component, e.g. bottom-right
-table.insert(opts.sections.lualine_z, require("neo-review").lualine())
--- native 'statusline': returns "%#Hl#icon%*"
---   require("neo-review").statusline_icon()
-```
-
-Every observable change (state, permission inbox, queue, stop) fires
-`User NeoReviewAgentStateChanged` with
-`data = { state, session_id, queued, pending, mode, profile, sandboxed }` —
-native-'statusline' users can redraw on it:
-
-```lua
-vim.api.nvim_create_autocmd("User", {
-  pattern = "NeoReviewAgentStateChanged",
-  callback = function() vim.cmd("redrawstatus") end,
-})
-```
-
-### Sandbox (Docker Sandboxes / sbx microVMs)
-
-By default the wrapped session runs inside a
-[Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) microVM — the
-plugin deliberately ships **no sandbox implementation of its own**. sbx
-provides a per-project persistent sandbox (`claude-<dirname>`, created
-automatically on first agent start), its own kernel, deny-by-default egress
-filtered **by domain name** at a host-side proxy (`sbx policy log` shows
-denials, `sbx policy allow network <host>` allows), and proxy-injected
-credentials that never enter the VM. Setup is sbx's, once per machine:
-install sbx (`brew trust docker/tap && brew install docker/tap/sbx`) and
-`sbx login`.
-
-When the sandbox is enabled (the default) and sbx is unavailable, the agent
-**refuses to start** with instructions — there is no silent fallback.
-Running directly on the host is an explicit per-repo choice
-(`:NeoReviewAgentSandbox off`), where permission prompts are the only
-guardrail. Sandboxed sessions default to `auto` permission mode (the microVM
-is the boundary; the classifier still routes flagged actions to the inbox);
-`bypassPermissions` is refused outside the sandbox. No-arg
-`:NeoReviewAgentSandbox` shows status; `agent.sandbox.argv_prefix` (list or
-`function({root})`) swaps in a custom wrapper instead of sbx.
+The winbar shows `· agent` while the process is running. For a statusline:
+`require("neo-review").statusline()` returns `"agent"` or `""`.
+`require("neo-review").statusline_icon()` returns a `NeoReviewAgent`-colored
+`●`, and `require("neo-review").lualine()` is a ready-made lualine component.
+`User NeoReviewAgentStateChanged` fires on start and exit with
+`data = { running }`.
 
 ## Commands
 
@@ -148,6 +53,7 @@ is the boundary; the classifier still routes flagged actions to the inbox);
 | `:NeoReviewThreads` | Picker of all comment threads (open/resolved/stale) |
 | `:NeoReviewResolve` | Toggle resolved for the thread here (thread buffer or code line) |
 | `:NeoReviewThreadDelete` / `:NeoReviewCleanResolved` | Delete one thread / all resolved threads (confirmed; human-only cleanup) |
+| `:NeoReviewAgentOpen` / `:NeoReviewAgentPing` / `:NeoReviewAgentStop` | Toggle the agent terminal / type an open-threads prompt into it / end its process |
 
 ## Comment threads (phase 2)
 
@@ -174,7 +80,7 @@ resolve threads; the plugin polls and re-renders within a few seconds.
 
 ## Using with an external Claude Code session (hunk-style)
 
-No wrapped session required — run Claude Code yourself in a terminal in the
+No agent terminal required — run Claude Code yourself in a terminal in the
 repo and drive everything from there. One-time setup: `:NeoReviewSkillInstall`
 (or `skill = { auto_install = true }`) symlinks the plugin's two skills,
 `neo-review` and `guided-review`, into `~/.claude/skills/`:
@@ -213,7 +119,8 @@ hunk · `<leader>rv` mark hunk reviewed · `<leader>rV` mark whole file
 reviewed + advance (lock/generated files) · `gh` view full deleted
 lines of the hunk in a read-only split · `<leader>rf`/`<leader>rh`
 pickers · `<leader>rc` comment · `<leader>rt` threads picker · `]c`/`[c`
-next/prev open comment · `]r`/`[r` next/prev walkthrough stop.
+next/prev open comment · `]r`/`[r` next/prev walkthrough stop ·
+`<leader>ro` agent terminal · `<leader>ra` ping agent.
 
 **Review progress model**: reviewed-state is content-hashed, so an agent (or
 you) editing a reviewed hunk automatically returns it — and its file — to
@@ -276,9 +183,7 @@ if a snacks update breaks it the plugin fails closed with a warning — run
 ```
 
 Requires Neovim 0.10+ (0.12 recommended) and git. Optional: snacks.nvim
-(richer pickers/explorer integration), the `claude` CLI (agent features),
-sbx / Docker Sandboxes (agent sandbox — required unless you explicitly opt
-out per repo with `:NeoReviewAgentSandbox off`).
+(richer pickers/explorer integration), the `claude` CLI (agent terminal).
 
 ## Development (contributors)
 
@@ -297,9 +202,7 @@ minimal sandbox instead, symlink `dev/config/init.lua` to
 ## Repo state on disk
 
 `.review/` in a reviewed project holds plugin state. `local/` (reviewed-hunks
-in `state.json`; per-repo agent choices in `agent.json`: `last_session_id`,
-`permission_mode`, `sandbox`, `sandboxed`, `profile`, `model` — all per-user)
-is always gitignored via a self-written `.review/.gitignore`;
+in `state.json`, per-user) is always gitignored via a self-written `.review/.gitignore`;
 `threads/` uses one file per message (rarely edited in place), so projects
 may choose to commit it.
 

@@ -27,42 +27,18 @@ function M.check()
     health.info("review mode off (:NeoReviewToggle)")
   end
 
-  health.start("agent session (wrapped claude)")
-  local agent_cmd = config.options.agent.cmd or "claude"
-  if vim.fn.executable(agent_cmd) == 1 then
-    local ver = vim.fn.system(agent_cmd .. " --version 2>/dev/null")
-    health.ok(agent_cmd .. " found: " .. vim.trim(ver))
-    health.info(
-      "transport: long-lived `-p --input-format stream-json` + stdio control channel. "
-        .. "This wire protocol is UNOFFICIAL (verified against claude 2.1.234); if a CLI "
-        .. "update breaks it, look at lua/neo-review/agent/claude.lua (protocol notes in header)"
-    )
+  health.start("agent terminal")
+  local agent_cmd = config.options.agent.cmd
+  local exe = vim.split(agent_cmd, "%s+", { trimempty = true })[1] or ""
+  if vim.fn.executable(exe) == 1 then
+    health.ok(exe .. " found: " .. vim.trim(vim.fn.system({ exe, "--version" })))
   else
-    health.warn(agent_cmd .. " not found in PATH — :NeoReviewAgentStart will fail")
+    health.warn(exe .. " not found in PATH — :NeoReviewAgentOpen will fail (agent.cmd = " .. agent_cmd .. ")")
   end
-  local agent = require("neo-review.agent")
-  local ast = agent.status()
-  if ast.state ~= "stopped" then
-    health.ok(
-      ("session %s — state: %s, %d queued turn(s), %d pending permission(s), mode: %s"):format(
-        (ast.session_id or "?"):sub(1, 8),
-        ast.state,
-        ast.queued,
-        agent.pending_count(),
-        agent.mode()
-      )
-    )
+  if require("neo-review.agent").status().running then
+    health.ok("terminal running")
   else
-    health.info("no session running (:NeoReviewAgentStart)")
-  end
-  local pname, _, raw_profile = agent.profile()
-  if raw_profile and not pname then
-    health.warn("persisted profile '" .. raw_profile .. "' is not defined in config (agent.profiles) — falling back to config defaults")
-  end
-  health.info(("profile: %s · model: %s · mode: %s"):format(pname or "none", agent.model() or "CLI default", agent.mode()))
-  health.info('statusline component: require("neo-review").statusline() — redraw on User NeoReviewAgentStateChanged')
-  if require("neo-review.agent").last_stderr then
-    health.warn("last stderr: " .. vim.trim(require("neo-review.agent").last_stderr))
+    health.info("terminal not running (:NeoReviewAgentOpen)")
   end
 
   health.start("external-session skills")
@@ -76,20 +52,6 @@ function M.check()
     else
       health.info(name .. " not installed (" .. state .. ": " .. detail .. ") — :NeoReviewSkillInstall links it for external Claude Code sessions")
     end
-  end
-
-  health.start("agent sandbox (Docker Sandboxes / sbx microVMs)")
-  local sandbox = require("neo-review.agent.sandbox")
-  local sok, sreason = sandbox.preflight()
-  if sok then
-    health.ok("sbx ready")
-  elseif config.options.agent.sandbox.enabled then
-    health.error("sandbox enabled but unavailable — the agent will REFUSE to start: " .. sreason)
-  else
-    health.warn("sandbox disabled — agent runs directly on the host (" .. (sreason or "") .. ")")
-  end
-  for _, l in ipairs(sandbox.status_lines()) do
-    health.info(l)
   end
 
   health.start("snacks explorer integration")

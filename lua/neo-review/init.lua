@@ -696,18 +696,15 @@ function M.file_hunks(relpath)
   return diff.hunks(baseline.file_text(session.root, relpath), lines), lines
 end
 
----Statusline component for lualine/heirline/'statusline': "" while the
----agent is stopped, else e.g. "agent:working ⏸1 [review:auto⛨]". The plugin
----fires User NeoReviewAgentStateChanged (data: state, session_id, queued,
----pending, mode, profile, sandboxed) on every change — native-statusline
----users can redrawstatus on it; lualine polls on its own.
+---Statusline component: "agent" while the agent terminal's claude is
+---running, else "". User NeoReviewAgentStateChanged (data: running) fires on
+---start/exit — native-statusline users can redrawstatus on it.
 function M.statusline()
   return require("neo-review.agent").status_text()
 end
 
----Compact color-coded icon for a native 'statusline' ("%#Hl#⏸1%*"-style,
----"" when the agent is stopped): ⏸N red = pending approvals, ● orange =
----working, ● green = idle, ○ dim = starting.
+---Compact icon for a native 'statusline' ("%#NeoReviewAgent#●%*" while the
+---agent terminal is running, else "").
 function M.statusline_icon()
   local icon, hl = require("neo-review.agent").status_icon()
   if not icon then
@@ -724,7 +721,7 @@ function M.lualine()
       return (require("neo-review.agent").status_icon()) or ""
     end,
     cond = function()
-      return require("neo-review.agent").status().state ~= "stopped"
+      return require("neo-review.agent").status().running
     end,
     color = function()
       local _, hl = require("neo-review.agent").status_icon()
@@ -786,12 +783,12 @@ function M.setup(opts)
     map(km.explorer_expand, function()
       require("neo-review.integrations.snacks_explorer").expand_changed()
     end, "Review: explorer reveal changed files")
+    map(km.agent_open, function()
+      require("neo-review.agent").toggle()
+    end, "Review: open/toggle agent terminal")
     map(km.agent_ping, function()
       require("neo-review.agent").ping()
     end, "Review: ping agent about open threads")
-    map(km.agent_permission, function()
-      require("neo-review.agent").review_permission()
-    end, "Review: review pending agent permission")
     map(km.next_comment, function()
       nav.comment(1)
     end, "Review: next comment")
