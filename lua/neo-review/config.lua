@@ -76,7 +76,7 @@ M.defaults = {
     explorer_filter = nil, -- changed-only filter alone (:NeoReviewExplorerFilter); no default key
     explorer_expand = "<leader>rE", -- snacks explorer: expand tree to reveal all changed files
     explorer_review = "<leader>rv", -- IN the explorer list: toggle reviewed for the file/folder under the cursor (buffer-local while review is on)
-    agent_open = "<leader>ro", -- open/toggle the agent terminal (interactive claude)
+    agent_open = "<C-;>", -- show/hide the agent terminal float (also works inside it)
     agent_ping = "<leader>ra", -- type a prompt about open threads into the agent terminal
 
     next_comment = "]c", -- next open comment, by file then line

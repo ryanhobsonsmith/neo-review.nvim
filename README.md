@@ -12,16 +12,25 @@ for you.
 
 ## Agent terminal
 
-`<leader>ro` / `:NeoReviewAgentOpen` opens a dedicated `:terminal` split
-running plain interactive `claude`, the same TUI you'd run yourself. It
-toggles: if the terminal is hidden, the key shows it; if it's visible, the key
-jumps to it; if you're already in it, the key hides it. Hiding leaves the
-session running. `<leader>ra` / `:NeoReviewAgentPing` starts the terminal if
-needed. It then types a one-line prompt listing the open comment threads
-(pointing at `.review/SKILL.md`) and presses Enter, as if you had typed it.
-`:NeoReviewAgentStop` ends the process. Everything else happens in the TUI
-itself: `/neo-review`, `/guided-review`, permissions, `/model`. To see what the
-agent is doing, look at the terminal.
+The editor can run one plain interactive `claude` per Neovim instance, the
+same TUI you'd run yourself, in a hidden terminal that never shows up in
+your buffer list. `<C-;>` / `:NeoReviewAgentOpen` shows it in a centered
+float, starting `claude` if it isn't running. Press `<C-;>` again from inside
+the float (even while typing) to hide it. `q` in normal mode also hides it,
+and so does moving to another window. Hiding leaves the session running.
+
+`<leader>ra` / `:NeoReviewAgentPing` starts `claude` in the background if
+needed. It types a one-line prompt listing the open comment threads
+(pointing at `.review/SKILL.md`) and submits it, without opening anything.
+Press `<C-;>` to watch. If `claude` is sitting on a dialog, such as the
+first-run "trust this folder?" check, the ping shows the float and asks you
+to answer the dialog instead of typing into it. `:NeoReviewAgentStop` ends
+the process.
+
+Everything else happens in the TUI itself: `/neo-review`, `/guided-review`,
+permissions, `/model`. To see what the agent is doing, look at the terminal.
+`<C-;>` needs a terminal that sends extended keys (Ghostty, kitty, WezTerm;
+inside tmux, set `extended-keys on`). Otherwise remap `keymaps.agent_open`.
 
 ```lua
 agent = {
@@ -53,7 +62,7 @@ The winbar shows `· agent` while the process is running. For a statusline:
 | `:NeoReviewThreads` | Picker of all comment threads (open/resolved/stale) |
 | `:NeoReviewResolve` | Toggle resolved for the thread here (thread buffer or code line) |
 | `:NeoReviewThreadDelete` / `:NeoReviewCleanResolved` | Delete one thread / all resolved threads (confirmed; human-only cleanup) |
-| `:NeoReviewAgentOpen` / `:NeoReviewAgentPing` / `:NeoReviewAgentStop` | Toggle the agent terminal / type an open-threads prompt into it / end its process |
+| `:NeoReviewAgentOpen` / `:NeoReviewAgentPing` / `:NeoReviewAgentStop` | Show/hide the agent terminal float / type an open-threads prompt into it / end its process |
 
 ## Comment threads (phase 2)
 
@@ -120,7 +129,7 @@ reviewed + advance (lock/generated files) · `gh` view full deleted
 lines of the hunk in a read-only split · `<leader>rf`/`<leader>rh`
 pickers · `<leader>rc` comment · `<leader>rt` threads picker · `]c`/`[c`
 next/prev open comment · `]r`/`[r` next/prev walkthrough stop ·
-`<leader>ro` agent terminal · `<leader>ra` ping agent.
+`<C-;>` show/hide agent terminal · `<leader>ra` ping agent.
 
 **Review progress model**: reviewed-state is content-hashed, so an agent (or
 you) editing a reviewed hunk automatically returns it — and its file — to

@@ -1,11 +1,12 @@
--- The agent terminal: one plain interactive `claude` running in a :terminal
--- buffer per Neovim instance. The editor only opens/hides it and types into
--- it (ping); you watch the terminal itself to see what the agent is doing.
+-- The agent terminal: one plain interactive `claude` running in a hidden,
+-- unlisted terminal buffer per Neovim instance. The editor shows/hides it in
+-- a float and types into it (ping); you watch the terminal itself to see what
+-- the agent is doing.
 local config = require("neo-review.config")
 
 local M = {}
 
-local state = { buf = nil, job = nil }
+local state = { buf = nil, job = nil, win = nil }
 
 local function running()
   return state.job ~= nil and vim.fn.jobwait({ state.job }, 0)[1] == -1
@@ -18,71 +19,140 @@ local function announce()
   })
 end
 
-local function find_win()
-  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-    if vim.api.nvim_win_get_buf(win) == state.buf then
-      return win
-    end
-  end
+-- Typed text and its Enter must arrive separately: in one burst the TUI
+-- treats the Enter as part of a paste and never submits.
+local SUBMIT_DELAY_MS = 200
+
+local function toggle_key()
+  local km = config.options.keymaps
+  return km and km.agent_open or nil
 end
 
+local function float_config()
+  local width = math.floor(vim.o.columns * 0.85)
+  local height = math.floor((vim.o.lines - vim.o.cmdheight) * 0.85)
+  return {
+    relative = "editor",
+    width = width,
+    height = height,
+    row = math.max(0, math.floor((vim.o.lines - vim.o.cmdheight - height) / 2) - 1),
+    col = math.floor((vim.o.columns - width) / 2),
+    style = "minimal",
+    border = "rounded",
+    title = " claude ",
+    title_pos = "center",
+  }
+end
+
+local function visible()
+  return state.win ~= nil and vim.api.nvim_win_is_valid(state.win)
+end
+
+---Start `claude` in a hidden, unlisted terminal buffer (no window).
 local function spawn()
-  vim.cmd("botright vsplit")
-  vim.cmd("terminal " .. config.options.agent.cmd)
-  local buf = vim.api.nvim_get_current_buf()
-  state.buf, state.job = buf, vim.b[buf].terminal_job_id
+  local buf = vim.api.nvim_create_buf(false, false)
+  vim.bo[buf].bufhidden = "hide"
+  local cmd = config.options.agent.cmd
+  -- Nvim's terminal renders 24-bit color but doesn't advertise it.
+  local opts = { env = { COLORTERM = "truecolor" } }
+  local job
+  vim.api.nvim_buf_call(buf, function()
+    if vim.fn.has("nvim-0.11") == 1 then
+      job = vim.fn.jobstart(cmd, vim.tbl_extend("force", opts, { term = true }))
+    else
+      job = vim.fn.termopen(cmd, opts)
+    end
+  end)
+  vim.bo[buf].buflisted = false
+  state.buf, state.job = buf, job
+
+  local key = toggle_key()
+  if key then
+    vim.keymap.set("t", key, M.toggle, { buffer = buf, desc = "Review: hide agent terminal" })
+  end
+  vim.keymap.set("n", "q", M.hide, { buffer = buf, desc = "Review: hide agent terminal" })
+  vim.api.nvim_create_autocmd("WinLeave", {
+    buffer = buf,
+    callback = function()
+      if vim.api.nvim_get_current_win() == state.win then
+        vim.schedule(M.hide)
+      end
+    end,
+  })
   vim.api.nvim_create_autocmd("TermClose", {
     buffer = buf,
     once = true,
     callback = function()
       if state.buf == buf then
-        state.buf, state.job = nil, nil
+        state.buf, state.job, state.win = nil, nil, nil
         announce()
       end
+      vim.schedule(function()
+        if vim.api.nvim_buf_is_valid(buf) then
+          vim.api.nvim_buf_delete(buf, { force = true })
+        end
+      end)
     end,
   })
   announce()
 end
 
----Make the agent terminal visible (spawning `claude` if none is running) and
----focus it.
+---Make sure the hidden terminal is running.
 ---@return boolean spawned true when a new process was started
-function M.open()
-  local spawned = false
-  if not (running() and vim.api.nvim_buf_is_valid(state.buf)) then
-    spawn()
-    spawned = true
+local function ensure()
+  if running() and vim.api.nvim_buf_is_valid(state.buf) then
+    return false
+  end
+  spawn()
+  return true
+end
+
+---Show the agent terminal in a float (starting `claude` if needed) and focus it.
+function M.show()
+  ensure()
+  if visible() then
+    vim.api.nvim_set_current_win(state.win)
   else
-    local win = find_win()
-    if win then
-      vim.api.nvim_set_current_win(win)
-    else
-      vim.cmd("botright vsplit")
-      vim.api.nvim_win_set_buf(0, state.buf)
-    end
+    state.win = vim.api.nvim_open_win(state.buf, true, float_config())
   end
   vim.cmd("startinsert")
-  return spawned
 end
 
----Hide the terminal when it's the current window (the process keeps
----running), otherwise open/focus it.
-function M.toggle()
-  if state.buf and vim.api.nvim_get_current_buf() == state.buf and running() then
-    vim.cmd("stopinsert")
-    if #vim.api.nvim_tabpage_list_wins(0) > 1 then
-      vim.api.nvim_win_close(0, false)
-    else
-      vim.cmd("enew")
-    end
-    return
+---Hide the float; the process keeps running.
+function M.hide()
+  if visible() then
+    local win = state.win
+    state.win = nil
+    vim.api.nvim_win_close(win, false)
   end
-  M.open()
 end
+
+---Hide the float when it's focused, otherwise show/focus it.
+function M.toggle()
+  if visible() and vim.api.nvim_get_current_win() == state.win then
+    M.hide()
+  else
+    M.show()
+  end
+end
+
+vim.api.nvim_create_autocmd("VimResized", {
+  group = vim.api.nvim_create_augroup("neo-review.agent.resize", { clear = true }),
+  callback = function()
+    if visible() then
+      vim.api.nvim_win_set_config(state.win, float_config())
+    end
+  end,
+})
 
 local function send(text)
-  vim.api.nvim_chan_send(state.job, text)
-  vim.api.nvim_chan_send(state.job, "\r")
+  local job = state.job
+  vim.api.nvim_chan_send(job, text)
+  vim.defer_fn(function()
+    if state.job == job and running() then
+      vim.api.nvim_chan_send(job, "\r")
+    end
+  end, SUBMIT_DELAY_MS)
 end
 
 ---One line on purpose: a newline typed into the TUI would submit early.
@@ -108,22 +178,44 @@ local function ping_prompt()
   return (prompt:gsub("[\r\n]+", " "))
 end
 
----Open the terminal (starting `claude` if needed) and type a prompt about the
----open comment threads into it.
+---claude is waiting on a selection dialog (folder trust, etc.): typed text
+---would answer it instead of becoming a prompt.
+local function awaiting_dialog()
+  for _, l in ipairs(vim.api.nvim_buf_get_lines(state.buf, 0, -1, false)) do
+    if l:find("Enter to confirm", 1, true) then
+      return true
+    end
+  end
+  return false
+end
+
+local function deliver(prompt)
+  if not running() then
+    return
+  end
+  if awaiting_dialog() then
+    vim.notify("neo-review agent: claude is waiting on a prompt — answer it, then ping again", vim.log.levels.WARN)
+    M.show()
+    return
+  end
+  send(prompt)
+end
+
+---Type a prompt about the open comment threads into the agent terminal,
+---starting `claude` in the background if needed. Doesn't show the terminal.
 function M.ping()
   local prompt = ping_prompt()
-  local spawned = M.open()
+  local spawned = ensure()
   local delay = spawned and config.options.agent.ready_delay_ms or 0
   if delay > 0 then
     vim.defer_fn(function()
-      if running() then
-        send(prompt)
-      end
+      deliver(prompt)
     end, delay)
   else
-    send(prompt)
+    deliver(prompt)
   end
-  vim.notify("neo-review agent: pinged about open threads")
+  local key = toggle_key()
+  vim.notify("neo-review agent: pinged about open threads" .. (key and (" (" .. key .. " to watch)") or ""))
 end
 
 function M.stop()
@@ -132,9 +224,9 @@ function M.stop()
   end
 end
 
----@return { running: boolean, buf: integer? }
+---@return { running: boolean, visible: boolean, buf: integer? }
 function M.status()
-  return { running = running(), buf = state.buf }
+  return { running = running(), visible = visible(), buf = state.buf }
 end
 
 ---"agent" while the terminal's process is running, else "".

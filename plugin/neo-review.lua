@@ -103,7 +103,7 @@ end, { desc = "Expand snacks explorer to reveal all changed files" })
 vim.api.nvim_create_user_command("NeoReviewAgentOpen", function()
   review()
   require("neo-review.agent").toggle()
-end, { desc = "Open/toggle the agent terminal (interactive claude)" })
+end, { desc = "Show/hide the agent terminal float (interactive claude)" })
 
 vim.api.nvim_create_user_command("NeoReviewAgentPing", function()
   review()

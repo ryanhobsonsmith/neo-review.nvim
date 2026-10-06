@@ -445,7 +445,7 @@ local function with_agent_terminal(fn)
   local prev_root = sess.root
   sess.root = repo
   require("neo-review.config").setup({
-    keymaps = false,
+    keymaps = { agent_open = "<C-;>" },
     agent = { cmd = vim.fn.shellescape(stub) .. " " .. vim.fn.shellescape(log), ready_delay_ms = 0 },
   })
   local agent = require("neo-review.agent")
@@ -471,24 +471,27 @@ local function with_agent_terminal(fn)
   assert(ok, err)
 end
 
-test("agent terminal: toggle spawns, hides without killing, re-shows the same session", function()
+test("agent terminal: toggle shows a float over a hidden, unlisted terminal and hides it again", function()
   with_agent_terminal(function(agent, lines)
     eq("", agent.status_text())
     eq(nil, (agent.status_icon()))
+    local orig = vim.api.nvim_get_current_win()
 
     agent.toggle()
-    local buf = vim.api.nvim_get_current_buf()
+    local win, buf = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
+    assert(vim.api.nvim_win_get_config(win).relative ~= "", "terminal should open in a float")
     eq("terminal", vim.bo[buf].buftype)
-    assert(agent.status().running, "job should be running")
+    eq(false, vim.bo[buf].buflisted, "agent buffer must stay out of buffer lists")
+    eq(1, vim.fn.maparg("<C-;>", "t", false, true).buffer, "toggle key must work inside the terminal")
     assert(vim.wait(2000, function()
       return #lines("SPAWN") == 1
     end, 20), "stub never started")
     eq("agent", agent.status_text())
     eq({ "●", "NeoReviewAgent" }, { agent.status_icon() })
 
-    local wins = #vim.api.nvim_tabpage_list_wins(0)
     agent.toggle() -- focused -> hide
-    eq(wins - 1, #vim.api.nvim_tabpage_list_wins(0))
+    eq(false, vim.api.nvim_win_is_valid(win))
+    eq(orig, vim.api.nvim_get_current_win())
     assert(vim.api.nvim_buf_is_valid(buf), "hiding must keep the buffer")
     assert(agent.status().running, "hiding must keep the job")
 
@@ -497,10 +500,11 @@ test("agent terminal: toggle spawns, hides without killing, re-shows the same se
     vim.wait(200)
     eq(1, #lines("SPAWN"), "must not respawn")
 
-    vim.cmd("wincmd p")
-    agent.toggle() -- visible but unfocused -> focus, no new window
-    eq(buf, vim.api.nvim_get_current_buf())
-    eq(wins, #vim.api.nvim_tabpage_list_wins(0))
+    vim.api.nvim_set_current_win(orig) -- leaving the float hides it
+    assert(vim.wait(500, function()
+      return not agent.status().visible
+    end, 20), "float should hide when you leave it")
+    assert(agent.status().running)
   end)
 end)
 
@@ -520,7 +524,10 @@ test("agent terminal: ping auto-starts and types a one-line prompt of open threa
     local done_id = mk("src/done.lua", "settled")
     store.set_status(repo, done_id, "resolved", "ryan")
 
+    local win, nwins = vim.api.nvim_get_current_win(), #vim.api.nvim_list_wins()
     agent.ping()
+    eq(win, vim.api.nvim_get_current_win(), "ping must not steal focus")
+    eq(nwins, #vim.api.nvim_list_wins(), "ping must not open a window")
     assert(vim.wait(3000, function()
       return #lines("RECV") == 1
     end, 20), "prompt never arrived: " .. vim.inspect(lines("")))
@@ -538,7 +545,7 @@ test("agent terminal: ping auto-starts and types a one-line prompt of open threa
   end)
 end)
 
-test("agent terminal: stop kills the process; next open starts fresh", function()
+test("agent terminal: stop kills the process and its buffer; next toggle starts fresh", function()
   with_agent_terminal(function(agent, lines)
     local events = {}
     local au = vim.api.nvim_create_autocmd("User", {
@@ -547,7 +554,8 @@ test("agent terminal: stop kills the process; next open starts fresh", function(
         events[#events + 1] = ev.data.running
       end,
     })
-    agent.open()
+    agent.toggle()
+    local buf = vim.api.nvim_get_current_buf()
     assert(vim.wait(2000, function()
       return #lines("SPAWN") == 1
     end, 20))
@@ -557,10 +565,13 @@ test("agent terminal: stop kills the process; next open starts fresh", function(
     end, 20), "stop did not end the job: " .. vim.inspect(events))
     eq({ true, false }, events)
     eq("", agent.status_text())
+    assert(vim.wait(500, function()
+      return not vim.api.nvim_buf_is_valid(buf)
+    end, 20), "exited terminal buffer should be wiped")
+    eq(false, agent.status().visible)
     vim.api.nvim_del_autocmd(au)
 
-    vim.cmd("silent! only")
-    agent.open()
+    agent.toggle()
     assert(vim.wait(2000, function()
       return #lines("SPAWN") == 2
     end, 20), "reopen did not spawn a fresh process")
